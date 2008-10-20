@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Diffuse Merge Tool
+Comment=Graphical tool for merging and comparing text files
+Exec=diffuse
+Icon=diffuse
+Terminal=false
+Type=Application
+Categories=Development;GTK;TextEditor;TextTools
