@@ -1,0 +1,4503 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Copyright (C) 2006-2008 Derrick Moser <derrick_moser@yahoo.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the licence, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program.  You may also obtain a copy of the GNU General Public License
+# from the Free Software Foundation by visiting their web site
+# (http://www.fsf.org/) or by writing to the Free Software Foundation, Inc.,
+# 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+import gettext
+import sys
+
+# translation location: '/usr/share/locale/<LANG>/LC_MESSAGES/diffuse.mo'
+# where '<LANG>' is the language key
+gettext.textdomain('diffuse')
+_ = gettext.gettext
+
+APP_NAME = 'Diffuse'
+VERSION = '0.2.15'
+COPYRIGHT = _('Copyright © 2006-2008 Derrick Moser')
+RESOURCES = '/etc/diffuserc'
+WEBSITE = 'http://diffuse.sourceforge.net/'
+
+# process help options
+if __name__ == '__main__':
+    args = sys.argv
+    argc = len(args)
+    if argc == 2 and args[1] in [ '-v', '--version' ]:
+        print '%s %s\n%s' % (APP_NAME, VERSION, COPYRIGHT)
+        sys.exit(0)
+    if argc == 2 and args[1] in [ '-h', '-?', '--help' ]:
+        print _("""Usage:
+    diffuse [ [OPTION...] [FILE...] ]...
+    diffuse ( -h | -? | --help | -v | --version )
+
+Diffuse is a graphical tool for merging and comparing text files.  Diffuse is
+able to compare an arbitrary number of files side-by-side and gives users the
+ability to manually adjust line matching and directly edit files.  Diffuse can
+also retrieve revisions of files from Bazaar, CVS, Darcs, Git, Mercurial,
+Monotone, Subversion, and SVK repositories for comparison and merging.
+
+Help Options:
+  ( -h | -? | --help )             Display this usage information
+  ( -v | --version )               Display version and copyright information
+
+Configuration Options:
+  --no-rcfile                      Do not read the standard resource files
+  --rcfile <file>                  Specify explicit resource file
+
+General Options:
+  ( -c | --commit ) <rev>          File revisions <rev-1> and <rev>
+  ( -D | --close-if-same )         Close all tabs with no differences
+  ( -e | --encoding ) <codec>      Use <codec> to read and write files
+  ( -r | --revision ) <rev>        File revision <rev>
+  ( -s | --separate )              Create a separate tab for each file
+  ( -t | --tab ) <label>           Create a new tab called <label>
+
+Display Options:
+  ( -b | --ignore-space-change )   Ignore changes to white space
+  ( -B | --ignore-blank-lines )    Ignore changes in blank lines
+  ( -i | --ignore-case )           Ignore case differences
+  ( -w | --ignore-all-space )      Ignore white space differences
+
+Interactive Mode Navigation:
+  Line Editing Mode
+    <enter>   - Enter character editing mode
+    <space>   - Enter alignment editing mode
+  Character Editing Mode
+    <escape>  - Return to line editing mode
+  Alignment Editing Mode
+    <space>   - Align and return to line editing mode
+    <escape>  - Return to line editing mode""")
+        sys.exit(0)
+
+import pygtk
+pygtk.require('2.0')
+import gtk
+
+import codecs
+import difflib
+import encodings
+import glob
+import gobject
+import locale
+import os
+import pango
+import re
+import shlex
+import stat
+import string
+import subprocess
+import webbrowser
+
+class Colour:
+    def __init__(self, r, g, b, a=1.0):
+        self.red = r
+        self.green = g
+        self.blue = b
+        self.alpha = a
+
+    # multiply by scalar
+    def __mul__(self, s):
+        return Colour(s * self.red, s * self.green, s * self.blue, s * self.alpha)
+
+    # add colours
+    def __add__(self, other):
+        return Colour(self.red + other.red, self.green + other.green, self.blue + other.blue, self.alpha + other.alpha)
+
+    # over operator
+    def over(self, other):
+        a = self.alpha
+        c = self + other * (1 - a)
+        c.alpha = 1 - (1 - a) * (1 - other.alpha)
+        return c
+
+# class to build and run a finite state machine for identifying syntax tokens
+class SyntaxParser:
+    # create a new state machine that begins in initial_state and classifies
+    # all characters not matched by the patterns as default_token_type
+    def __init__(self, initial_state, default_token_type):
+        self.initial_state = initial_state
+        self.default_token_type = default_token_type
+        self.transitions_lookup = { initial_state : [] }
+
+    # Adds a new edge to the finite state machine from prev_state to
+    # next_state.  Characters will be identified as token_type when pattern is
+    # matched.  Any newly referenced state will be added.  Patterns for edges
+    # leaving a state will be tested in the order they were added to the finite
+    # state machine.
+    def addPattern(self, prev_state, next_state, token_type, pattern):
+        lookup = self.transitions_lookup
+        for state in prev_state, next_state:
+            if not lookup.has_key(state):
+                lookup[state] = []
+        lookup[prev_state].append([pattern, token_type, next_state])
+
+    # given a string and an initial state, idenitify the final state and tokens
+    def parse(self, state_name, s):
+        lookup = self.transitions_lookup
+        transitions, blocks, start = lookup[state_name], [], 0
+        while start < len(s):
+            for pattern, token_type, next_state in transitions:
+                m = pattern.match(s, start)
+                if m is not None:
+                     end, state_name = m.span()[1], next_state
+                     transitions = lookup[state_name]
+                     break
+            else:
+                end, token_type = start + 1, self.default_token_type
+            if len(blocks) > 0 and blocks[-1][2] == token_type:
+                blocks[-1][1] = end
+            else:
+                blocks.append([start, end, token_type])
+            start = end
+        return state_name, blocks
+
+# find the full path of an executable
+def getExePath(s):
+    if os.environ.has_key('PATH'):
+        for p in os.environ['PATH'].split(os.pathsep):
+            fp = os.path.join(p, s)
+            if os.path.isfile(fp):
+                return fp
+
+# find the help directory for the current locale
+def getLocalisedDir(s):
+    lang = locale.getdefaultlocale()[0]
+    path = os.path.join(s, lang)
+    if os.path.exists(path):
+        return path
+    postfix = lang.index('_')
+    if postfix > 0:
+        path = os.path.join(s, lang[:postfix])
+        if os.path.exists(path):
+            return path
+    return os.path.join(s, 'C')
+
+class Resources:
+    def __init__(self):
+        # initialise defaults
+        self.keybindings = {}
+        self.keybindings_lookup = {}
+        set_binding = self.setKeyBinding
+        set_binding('menu', 'open_file', 'Ctrl+o')
+        set_binding('menu', 'reload_file', 'Shift+Ctrl+R')
+        set_binding('menu', 'save_file', 'Ctrl+s')
+        set_binding('menu', 'save_file_as', 'Shift+Ctrl+S')
+        set_binding('menu', 'new_2_way_file_merge', 'Ctrl+2')
+        set_binding('menu', 'new_3_way_file_merge', 'Ctrl+3')
+        set_binding('menu', 'quit', 'Ctrl+q')
+        set_binding('menu', 'undo', 'Ctrl+z')
+        set_binding('menu', 'redo', 'Shift+Ctrl+Z')
+        set_binding('menu', 'cut', 'Ctrl+x')
+        set_binding('menu', 'copy', 'Ctrl+c')
+        set_binding('menu', 'paste', 'Ctrl+v')
+        set_binding('menu', 'select_all', 'Ctrl+a')
+        set_binding('menu', 'find', 'Ctrl+f')
+        set_binding('menu', 'find_next', 'Ctrl+g')
+        set_binding('menu', 'find_previous', 'Shift+Ctrl+G')
+        set_binding('menu', 'go_to_line', 'Shift+Ctrl+l')
+        set_binding('menu', 'convert_to_dos', 'Shift+Ctrl+E')
+        set_binding('menu', 'convert_to_unix', 'Ctrl+e')
+        set_binding('menu', 'previous_tab', 'Ctrl+Page_Up')
+        set_binding('menu', 'next_tab', 'Ctrl+Page_Down')
+        set_binding('menu', 'close_tab', 'Ctrl+w')
+        set_binding('menu', 'shift_pane_left', 'Shift+Ctrl+Left')
+        set_binding('menu', 'shift_pane_right', 'Shift+Ctrl+Right')
+        set_binding('menu', 'preferences', 'Ctrl+p')
+        set_binding('menu', 'realign_all', 'Ctrl+l')
+        set_binding('menu', 'first_difference', 'Shift+Ctrl+Up')
+        set_binding('menu', 'previous_difference', 'Ctrl+Up')
+        set_binding('menu', 'next_difference', 'Ctrl+Down')
+        set_binding('menu', 'last_difference', 'Shift+Ctrl+Down')
+        set_binding('menu', 'clear_edits', 'Ctrl+r')
+        set_binding('menu', 'merge_from_left', 'Ctrl+Left')
+        set_binding('menu', 'merge_from_right', 'Ctrl+Right')
+        set_binding('menu', 'isolate', 'Ctrl+i')
+        set_binding('menu', 'help_contents', 'F1')
+        set_binding('line_mode', 'enter_align_mode', 'space')
+        set_binding('line_mode', 'enter_character_mode', 'Return')
+        set_binding('line_mode', 'up', 'Up')
+        set_binding('line_mode', 'extend_up', 'Shift+Up')
+        set_binding('line_mode', 'down', 'Down')
+        set_binding('line_mode', 'extend_down', 'Shift+Down')
+        set_binding('line_mode', 'left', 'Left')
+        set_binding('line_mode', 'extend_left', 'Shift+Left')
+        set_binding('line_mode', 'right', 'Right')
+        set_binding('line_mode', 'extend_right', 'Shift+Right')
+        set_binding('line_mode', 'page_up', 'Page_Up')
+        set_binding('line_mode', 'extend_page_up', 'Shift+Page_Up')
+        set_binding('line_mode', 'page_down', 'Page_Down')
+        set_binding('line_mode', 'extend_page_down', 'Shift+Page_Down')
+        set_binding('line_mode', 'delete_text', 'BackSpace')
+        set_binding('line_mode', 'delete_text', 'Delete')
+        set_binding('line_mode', 'first_line', 'Home')
+        set_binding('line_mode', 'extend_first_line', 'Shift+Home')
+        set_binding('line_mode', 'last_line', 'End')
+        set_binding('line_mode', 'extend_last_line', 'Shift+End')
+        set_binding('line_mode', 'first_difference', 'Ctrl+Home')
+        set_binding('line_mode', 'last_difference', 'Ctrl+End')
+        set_binding('align_mode', 'enter_line_mode', 'Escape')
+        set_binding('align_mode', 'enter_character_mode', 'Return')
+        set_binding('align_mode', 'up', 'Up')
+        set_binding('align_mode', 'down', 'Down')
+        set_binding('align_mode', 'left', 'Left')
+        set_binding('align_mode', 'right', 'Right')
+        set_binding('align_mode', 'page_up', 'Page_Up')
+        set_binding('align_mode', 'page_down', 'Page_Down')
+        set_binding('align_mode', 'align', 'space')
+        set_binding('character_mode', 'enter_line_mode', 'Escape')
+
+        self.colours = {
+            'align' : Colour(1.0, 1.0, 0.0),
+            'char_selection' : Colour(0.7, 0.7, 1.0),
+            'cursor' : Colour(0.0, 0.0, 0.0),
+            'difference_1' : Colour(1.0, 0.625, 0.625),
+            'difference_2' : Colour(0.85, 0.625, 0.775),
+            'difference_3' : Colour(0.85, 0.775, 0.625),
+            'hatch' : Colour(0.8, 0.8, 0.8),
+            'line_number' : Colour(0.0, 0.0, 0.0),
+            'line_number_background' : Colour(0.75, 0.75, 0.75),
+            'line_selection' : Colour(0.7, 0.7, 1.0),
+            'map_background' : Colour(0.6, 0.6, 0.6),
+            'modified' : Colour(0.5, 1.0, 0.5),
+            'text' : Colour(0.0, 0.0, 0.0),
+            'text_background' : Colour(1.0, 1.0, 1.0) }
+        self.unknown_colours = {}
+        self.floats = {
+           'align_alpha' : 1.0,
+           'char_difference_alpha' : 0.4,
+           'char_selection_alpha' : 0.4,
+           'line_difference_alpha' : 0.3,
+           'line_selection_alpha' : 0.4,
+           'modified_alpha' : 0.4 }
+        self.unknown_floats = {}
+        self.strings = {
+           'help_browser': '',
+           'help_file': '',
+           'help_url': WEBSITE + 'manual.html',
+           'icon': '/usr/share/pixmaps/diffuse.png' }
+        help_browser = getExePath('gnome-help')
+        if help_browser is not None:
+           help_file = os.path.join(getLocalisedDir('/usr/share/gnome/help/diffuse'), 'diffuse.xml')
+           if os.path.isfile(help_file):
+               self.strings['help_browser'] = help_browser
+               self.strings['help_file'] = help_file
+        self.unknown_strings = {}
+        self.default_colour = Colour(0.0, 0.0, 0.0)
+        self.char_classes = {}
+        self.syntaxes = {}
+        self.syntax_file_patterns = {}
+        self.current_syntax = None
+
+        self.resource_files = {}
+
+        self.setDifferenceColours('difference_1 difference_2 difference_3')
+        self.setCharacterClasses('48-57:48 65-90:48 97-122:48 95:48 9:32')
+
+    # keyboard action processing
+    def setKeyBinding(self, ctx, s, v):
+        action_tuple = (ctx, s)
+        modifiers = 0
+        key = None
+        for token in v.split('+'):
+            if token == 'Shift':
+                modifiers |= gtk.gdk.SHIFT_MASK
+            elif token == 'Ctrl':
+                modifiers |= gtk.gdk.CONTROL_MASK
+            elif len(token) == 0 or token[0] == '_':
+                raise ValueError()
+            else:
+                if token[0].isdigit():
+                    token = '_' + token
+                if not hasattr(gtk.keysyms, token):
+                   raise ValueError()
+                key = getattr(gtk.keysyms, token)
+        if key is None:
+           raise ValueError()
+        key_tuple = (ctx, (key, modifiers))
+
+        # remove any existing binding
+        if self.keybindings_lookup.has_key(key_tuple):
+            self._removeKeyBinding(key_tuple)
+
+        # ensure we have a set to hold this action
+        if not self.keybindings.has_key(action_tuple):
+            self.keybindings[action_tuple] = {}
+        bindings = self.keybindings[action_tuple]
+
+        # menu items can only have one binding
+        if ctx == 'menu':
+            for k in bindings.keys():
+                self._removeKeyBinding(k)
+
+        # add the binding
+        bindings[key_tuple] = None
+        self.keybindings_lookup[key_tuple] = action_tuple
+
+    def _removeKeyBinding(self, key_tuple):
+        action_tuple = self.keybindings_lookup[key_tuple]
+        del self.keybindings_lookup[key_tuple]
+        del self.keybindings[action_tuple][key_tuple]
+
+    def getActionForKey(self, ctx, key, modifiers):
+        tuple = (ctx, (key, modifiers))
+        if self.keybindings_lookup.has_key(tuple):
+            return self.keybindings_lookup[tuple][1]
+
+    def getKeyBindings(self, ctx, s):
+        tuple = (ctx, s)
+        if self.keybindings.has_key(tuple):
+            return [ t for c, t in self.keybindings[tuple].keys() ]
+        return []
+
+    # colours used for indicating differences
+    def setDifferenceColours(self, s):
+        colours = s.split()
+        if len(colours) > 0:
+            self.difference_colours = colours
+
+    def getDifferenceColour(self, i):
+        n = len(self.difference_colours)
+        return self.getColour(self.difference_colours[(i + n - 1) % n])
+
+    # mapping used to identify similar character to select when double-clicking
+    def setCharacterClasses(self, s):
+        self.char_classes = {}
+        for ss in s.split():
+            a = ss.split(':')
+            if len(a) == 2:
+                r = a[0].split('-')
+                c = int(a[1])
+                for a in range(int(r[0]), int(r[-1]) + 1):
+                    self.char_classes[a] = c
+
+    def getCharacterClass(self, c):
+        c = ord(c)
+        if self.char_classes.has_key(c):
+            return self.char_classes[c]
+        return c
+
+    # colour resources
+    def getColour(self, symbol):
+        if self.colours.has_key(symbol):
+            return self.colours[symbol]
+        if not self.unknown_colours.has_key(symbol):
+            print _('Warning: unknown colour %s') % (repr(symbol), )
+            self.unknown_colours[symbol] = None
+        return self.default_colour
+
+    # float resources
+    def getFloat(self, symbol):
+        if self.floats.has_key(symbol):
+            return self.floats[symbol]
+        if not self.unknown_floats.has_key(symbol):
+            print _('Warning: unknown float %s') % (repr(symbol), )
+            self.unknown_floats[symbol] = None
+        return 0.5
+
+    # string resources
+    def getString(self, symbol):
+        if self.strings.has_key(symbol):
+            return self.strings[symbol]
+        if not self.unknown_strings.has_key(symbol):
+            print _('Warning: unknown string %s') % (repr(symbol), )
+            self.unknown_strings[symbol] = None
+
+    # syntax highlighting
+    def getSyntaxNames(self):
+        return self.syntaxes.keys()
+
+    def getSyntax(self, name):
+        if self.syntaxes.has_key(name):
+            return self.syntaxes[name]
+
+    def getSyntaxByFilename(self, name):
+        name = os.path.basename(name)
+        for key in self.syntax_file_patterns.keys():
+            if self.syntax_file_patterns[key].search(name):
+                return self.getSyntax(key)
+
+    # parse resource files
+    def parse(self, file_name):
+        if not self.resource_files.has_key(file_name):
+            self.resource_files[file_name] = None
+            try:
+                f = open(file_name, 'r')
+                ss = f.readlines()
+                f.close()
+            except IOError:
+                print _('Error reading %s.') % (repr(file_name), )
+                return
+
+            # FIXME: improve validation
+            for i, s in enumerate(ss):
+                args = shlex.split(s, True)
+                if len(args) > 0:
+                   try:
+                       if args[0] == 'import' and len(args) == 2:
+                           path = os.path.expanduser(args[1])
+                           paths = glob.glob(path)
+                           if len(paths) == 0:
+                               paths = [ path ]
+                           for path in paths:
+                               self.parse(path)
+                       elif args[0] == 'keybinding' and len(args) == 4:
+                           self.setKeyBinding(args[1], args[2], args[3])
+                       elif args[0] in [ 'colour', 'color' ] and len(args) == 5:
+                           self.colours[args[1]] = Colour(float(args[2]), float(args[3]), float(args[4]))
+                       elif args[0] == 'float' and len(args) == 3:
+                           self.floats[args[1]] = float(args[2])
+                       elif args[0] == 'string' and len(args) == 3:
+                           self.strings[args[1]] = args[2]
+                           if args[1] == 'difference_colours':
+                               self.setDifferenceColours(args[2])
+                           elif args[1] == 'character_classes':
+                               self.setCharacterClasses(args[2])
+                       elif args[0] == 'syntax' and len(args) == 4:
+                           self.current_syntax = SyntaxParser(args[2], args[3])
+                           self.syntaxes[args[1]] = self.current_syntax
+                       elif args[0] == 'syntax_pattern' and self.current_syntax is not None and len(args) >= 5:
+                           flags = 0
+                           for arg in args[5:]:
+                               if arg == 'ignorecase':
+                                   flags |= re.IGNORECASE
+                               else:
+                                   raise ValueError()
+                           self.current_syntax.addPattern(args[1], args[2], args[3], re.compile(args[4], flags))
+                       elif args[0] == 'syntax_files' and len(args) == 3:
+                           self.syntax_file_patterns[args[1]] = re.compile(args[2])
+                       else:
+                           raise ValueError()
+                   except: # Grr... the 're' module throws weird errors
+                   #except ValueError:
+                       print _('Error parsing line %(line)d of "%(file)s".') % { 'line': i + 1, 'file': file_name }
+
+theResources = Resources()
+
+# convenience class for displaying a message dialogue
+class MessageDialog(gtk.MessageDialog):
+    def __init__(self, parent, type, msg):
+        if type == gtk.MESSAGE_QUESTION:
+           buttons = gtk.BUTTONS_OK_CANCEL
+        else:
+           buttons = gtk.BUTTONS_OK
+        gtk.MessageDialog.__init__(self, parent, gtk.DIALOG_MODAL | gtk.DIALOG_DESTROY_WITH_PARENT, type, buttons, msg)
+        self.set_title(APP_NAME)
+
+# text entry widget with a button to help pick file names
+class FileEntry(gtk.HBox):
+    def __init__(self, parent, title):
+        gtk.HBox.__init__(self)
+        self.toplevel = parent
+        self.title = title
+        self.entry = entry = gtk.Entry()
+        self.pack_start(entry, True, True, 0)
+        entry.show()
+        button = gtk.Button()
+        image = gtk.Image()
+        image.set_from_stock(gtk.STOCK_OPEN, gtk.ICON_SIZE_MENU)
+        button.add(image)
+        image.show()
+        button.connect('clicked', self.chooseFile)
+        self.pack_start(button, False, False, 0)
+        button.show()
+
+    def chooseFile(self, widget):
+        dialog = gtk.FileChooserDialog(self.title, self.toplevel, gtk.FILE_CHOOSER_ACTION_OPEN, (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_OPEN, gtk.RESPONSE_OK))
+        if dialog.run() == gtk.RESPONSE_OK:
+            self.entry.set_text(dialog.get_filename())
+        dialog.destroy()
+
+    def set_text(self, s):
+        self.entry.set_text(s)
+
+    def get_text(self):
+        return self.entry.get_text()
+
+# adaptor class to allow a gtk.FontButton to be read like a gtk.Entry
+class FontButton(gtk.FontButton):
+    def __init__(self):
+        gtk.FontButton.__init__(self)
+
+    def get_text(self):
+        return self.get_font_name()
+
+# class to store preferences and construct a dialogue for manipulating them
+class Preferences:
+    def __init__(self):
+        self.bool_prefs = {}
+        self.int_prefs = {}
+        self.string_prefs = {}
+
+        # find available encodings
+        encs = {}
+        for e in encodings.aliases.aliases.values():
+            encs[e] = None
+        self.encodings = sorted(encs.keys())
+
+        self.template = [ 'FolderSet',
+            _('Display'),
+            [ 'List',
+              [ 'Font', 'display_font', 'Monospace 10', _('Font') ],
+              [ 'Integer', 'display_tab_width', 8, _('Tab Width') ],
+              [ 'Boolean', 'display_ignore_whitespace', False, _('Ignore White Space') ],
+              [ 'Boolean', 'display_ignore_whitespace_changes', False, _('Ignore Changes to White Space') ],
+              [ 'Boolean', 'display_ignore_blanklines', False, _('Ignore Blank Lines') ],
+              [ 'Boolean', 'display_ignore_case', False, _('Ignore Case') ],
+              [ 'Boolean', 'display_hide_endofline', True, _('Hide End of Line Characters') ]
+            ],
+            _('Alignment'),
+            [ 'List',
+              [ 'Boolean', 'align_ignore_whitespace', True, _('Ignore White Space') ],
+              [ 'Boolean', 'align_ignore_whitespace_changes', False, _('Ignore Changes to White Space') ],
+              [ 'Boolean', 'align_ignore_blanklines', False, _('Ignore Blank Lines') ],
+              [ 'Boolean', 'align_ignore_case', False, _('Ignore Case') ]
+            ],
+            _('Editor'),
+            [ 'List',
+              [ 'Integer', 'editor_soft_tab_width', 8, _('Soft Tab Width') ],
+              [ 'Boolean', 'editor_expand_tabs', False, _('Expand Tabs to Spaces') ]
+            ],
+            _('Regional Settings'),
+            [ 'List',
+              [ 'String', 'encoding_auto_detect_codecs', 'utf_8 latin_1', _('Order of codecs used to identify encoding') ]
+            ],
+            _('Version Control'),
+            [ 'FolderSet',
+              'Bazaar',
+              [ 'List',
+                [ 'File', 'bzr_bin', 'bzr', _('Command') ],
+                [ 'String', 'bzr_default_revision', '-1', _('Default Revision') ]
+              ],
+              'CVS',
+              [ 'List',
+                [ 'File', 'cvs_bin', 'cvs', _('Command') ],
+                [ 'String', 'cvs_default_revision', 'BASE', _('Default Revision') ]
+              ],
+              'Darcs',
+              [ 'List',
+                [ 'File', 'darcs_bin', 'darcs', _('Command') ],
+                [ 'String', 'darcs_default_revision', '', _('Default Revision') ]
+              ],
+              'Git',
+              [ 'List',
+                [ 'File', 'git_bin', 'git', _('Command') ],
+                [ 'String', 'git_default_revision', 'HEAD', _('Default Revision') ]
+              ],
+              'Mercurial',
+              [ 'List',
+                [ 'File', 'hg_bin', 'hg', _('Command') ],
+                [ 'String', 'hg_default_revision', 'tip', _('Default Revision') ]
+              ],
+              'Monotone',
+              [ 'List',
+                [ 'File', 'mtn_bin', 'mtn', _('Command') ],
+                [ 'String', 'mtn_default_revision', 'h:', _('Default Revision') ]
+              ],
+              'Subversion',
+              [ 'List',
+                [ 'File', 'svn_bin', 'svn', _('Command') ],
+                [ 'String', 'svn_default_revision', 'BASE', _('Default Revision') ]
+              ],
+              'SVK',
+              [ 'List',
+                [ 'File', 'svk_bin', 'svk', _('Command') ],
+                [ 'String', 'svk_default_revision', 'HEAD', _('Default Revision') ]
+              ]
+            ]
+          ]
+        self._initFromTemplate(self.template)
+        # load the user's preferences
+        self.path = os.path.expanduser('~/.diffuse/prefs')
+        if os.path.isfile(self.path):
+            try:
+                f = open(self.path, 'r')
+                ss = f.readlines()
+                f.close()
+                for j, s in enumerate(ss):
+                    try:
+                        a = shlex.split(s, True)
+                        if len(a) > 0:
+                            if len(a) == 2 and self.bool_prefs.has_key(a[0]):
+                                self.bool_prefs[a[0]] = (a[1] == 'True')
+                            elif len(a) == 2 and self.int_prefs.has_key(a[0]):
+                                self.int_prefs[a[0]] = int(a[1])
+                            elif len(a) == 2 and self.string_prefs.has_key(a[0]):
+                                self.string_prefs[a[0]] = a[1]
+                            else:
+                                raise ValueError()
+                    except ValueError:
+                        print _('Error parsing line %(line)d of "%(file)s".') % { 'line': j + 1, 'file': self.path }
+            except IOError:
+                print _('Error reading %s.') % (repr(self.path), )
+
+    def _initFromTemplate(self, template):
+        if template[0] == 'FolderSet' or template[0] == 'List':
+            i = 1
+            while i < len(template):
+                if template[0] == 'FolderSet':
+                    i += 1
+                self._initFromTemplate(template[i])
+                i += 1
+        elif template[0] == 'Boolean':
+            self.bool_prefs[template[1]] = template[2]
+        elif template[0] == 'Integer':
+            self.int_prefs[template[1]] = template[2]
+        elif template[0] in [ 'String', 'File', 'Font' ]:
+            self.string_prefs[template[1]] = template[2]
+
+    def runDialog(self, parent):
+        dialog = gtk.Dialog(_('Preferences'), parent, gtk.DIALOG_MODAL|gtk.DIALOG_DESTROY_WITH_PARENT, (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_OK))
+
+        widgets = {}
+        w = self._buildPrefsDialog(parent, widgets, self.template)
+        dialog.vbox.add(w)
+        w.show()
+
+        accept = (dialog.run() == gtk.RESPONSE_OK)
+        if accept:
+            try:
+                ss = []
+                for k in self.bool_prefs.keys():
+                    ss.append('%s %s\n' % (k, widgets[k].get_active()))
+                for k in self.int_prefs.keys():
+                    ss.append('%s %s\n' % (k, widgets[k].get_value_as_int()))
+                for k in self.string_prefs.keys():
+                    ss.append('%s "%s"\n' % (k, widgets[k].get_text().replace('\\', '\\\\').replace('"', '\\"')))
+                ss.sort()
+                f = open(self.path, 'w')
+                f.write('# This prefs file was generated by %s %s.\n\n' % (APP_NAME, VERSION))
+                for s in ss:
+                    f.write(s)
+                f.close()
+            except IOError:
+                print _('Error writing %s.') % (repr(self.path), )
+                m = MessageDialog(parent, gtk.MESSAGE_ERROR, _('Error writing %s.') % (repr(self.path), ))
+                m.run()
+                m.destroy()
+            for k in self.bool_prefs.keys():
+                self.bool_prefs[k] = widgets[k].get_active()
+            for k in self.int_prefs.keys():
+                self.int_prefs[k] = widgets[k].get_value_as_int()
+            for k in self.string_prefs.keys():
+                self.string_prefs[k] = widgets[k].get_text()
+        dialog.destroy()
+        return accept
+
+    def _buildPrefsDialog(self, parent, widgets, template):
+        type = template[0]
+        if type == 'FolderSet':
+            notebook = gtk.Notebook()
+            notebook.set_border_width(10)
+            i = 1
+            while i < len(template):
+                label = gtk.Label(template[i])
+                i += 1
+                w = self._buildPrefsDialog(parent, widgets, template[i])
+                i += 1
+                notebook.append_page(w, label)
+                w.show()
+                label.show()
+            return notebook
+        else:
+            n = len(template) - 1
+            table = gtk.Table(2, n)
+            table.set_border_width(10)
+            for i, tpl in enumerate(template[1:]):
+                type = tpl[0]
+                if type == 'FolderSet':
+                    w = self._buildPrefsDialog(parent, widgets, tpl)
+                    table.attach(w, 0, 2, i, i + 1, gtk.FILL, gtk.FILL)
+                    w.show()
+                elif type == 'Boolean':
+                    button = gtk.CheckButton(tpl[3])
+                    button.set_active(self.bool_prefs[tpl[1]])
+                    widgets[tpl[1]] = button
+                    table.attach(button, 1, 2, i, i + 1, gtk.FILL, gtk.FILL)
+                    button.show()
+                else:
+                    label = gtk.Label(tpl[3] + ': ')
+                    label.set_alignment(1.0, 0.5)
+                    table.attach(label, 0, 1, i, i + 1, gtk.FILL, gtk.FILL)
+                    label.show()
+                    if tpl[0] in [ 'Font', 'Integer' ]:
+                        entry = gtk.HBox()
+                        if tpl[0] == 'Font':
+                            button = FontButton()
+                            button.set_font_name(self.string_prefs[tpl[1]])
+                        else:
+                            button = gtk.SpinButton()
+                            button.set_range(1, 128)
+                            button.set_value(self.int_prefs[tpl[1]])
+                            button.set_increments(1, 1)
+                        widgets[tpl[1]] = button
+                        entry.pack_start(button, False, False, 0)
+                        button.show()
+                    else:
+                        if tpl[0] == 'File':
+                            entry = FileEntry(parent, tpl[3])
+                        else:
+                            entry = gtk.Entry()
+                        widgets[tpl[1]] = entry
+                        entry.set_text(self.string_prefs[tpl[1]])
+                    table.attach(entry, 1, 2, i, i + 1, gtk.EXPAND|gtk.FILL, gtk.FILL)
+                    entry.show()
+                table.show()
+            return table
+
+    def getBool(self, name):
+        return self.bool_prefs[name]
+
+    def setBool(self, name, value):
+        self.bool_prefs[name] = value
+
+    def getInt(self, name):
+        return self.int_prefs[name]
+
+    def getString(self, name):
+        return self.string_prefs[name]
+
+    def getEncodings(self):
+        return self.encodings
+
+    def _getDefaultEncodings(self):
+        return self.string_prefs['encoding_auto_detect_codecs'].split()
+
+    def getDefaultEncoding(self):
+        encodings = self._getDefaultEncodings()
+        if len(encodings) > 0:
+            return encodings[0]
+        return 'utf_8'
+
+    # attempt to convert a string to unicode from an unknown encoding
+    def convertToUnicode(self, ss):
+        for encoding in self._getDefaultEncodings():
+            try:
+                result = []
+                for s in ss:
+                    if s is not None:
+                        s = unicode(s, encoding)
+                    result.append(s)
+                return result, encoding
+            except (UnicodeDecodeError, LookupError):
+                pass
+        result = []
+        for s in ss:
+            if s is not None:
+                s = ''.join([unichr(ord(c)) for c in s])
+            result.append(s)
+        return result, None
+
+def cutBlocks(i, blocks):
+    pre, post, nlines = [], [], 0
+    for b in blocks:
+        if nlines >= i:
+            post.append(b)
+        elif nlines + b <= i:
+            pre.append(b)
+        else:
+            n = i - nlines
+            pre.append(n)
+            post.append(b - n)
+        nlines += b
+    return pre, post
+
+def mergeBlocks(leftblocks, rightblocks):
+    leftblocks, rightblocks, b = leftblocks[:], rightblocks[:], []
+    while len(leftblocks) > 0:
+        nleft, nright = leftblocks[0], rightblocks[0]
+        n = min(nleft, nright)
+        if n < nleft:
+            leftblocks[0] -= n
+        else:
+            del leftblocks[0]
+        if n < nright:
+            rightblocks[0] -= n
+        else:
+            del rightblocks[0]
+        b.append(n)
+    return b
+
+def mergeRanges(r1, r2):
+    r1, r2, result, start = r1[:], r2[:], [], 0
+    rs = [ r1, r2 ]
+    while len(r1) > 0 and len(r2) > 0:
+        flags, start = 0, min(r1[0][0], r2[0][0])
+        if start == r1[0][0]:
+            r1end = r1[0][1]
+            flags |= r1[0][2]
+        else:
+            r1end = r1[0][0]
+        if start == r2[0][0]:
+            r2end = r2[0][1]
+            flags |= r2[0][2]
+        else:
+            r2end = r2[0][0]
+        end = min(r1end, r2end)
+        result.append((start, end, flags))
+        for r in rs:
+            if start == r[0][0]:
+                if end == r[0][1]:
+                    del r[0]
+                else:
+                    r[0] = (end, r[0][1], r[0][2])
+    result.extend(r1)
+    result.extend(r2)
+    return result
+
+def removeNullLines(blocks, lines_set):
+    bi, bn, i = 0, 0, 0
+    while bi < len(blocks):
+        while i < bn + blocks[bi]:
+            for lines in lines_set:
+                if lines[i] is not None:
+                    i += 1
+                    break
+            else:
+                for lines in lines_set:
+                    del lines[i]
+                blocks[bi] -= 1
+        if blocks[bi] == 0:
+            del blocks[bi]
+        else:
+            bn += blocks[bi]
+            bi += 1
+
+# convenience method for creating a menu according to a template
+def createMenu(specs, accel_group=None):
+    menu = gtk.Menu()
+    for spec in specs:
+        if len(spec) > 0:
+            item = gtk.ImageMenuItem(spec[0])
+            cb = spec[1]
+            if cb is not None:
+                data = spec[2]
+                item.connect('activate', cb, data)
+            if len(spec) > 3 and spec[3] is not None:
+                image = gtk.Image()
+                image.set_from_stock(spec[3], gtk.ICON_SIZE_MENU)
+                item.set_image(image)
+            if accel_group is not None and len(spec) > 4:
+                a = theResources.getKeyBindings('menu', spec[4])
+                if len(a) > 0:
+                    key, modifier = a[0]
+                    item.add_accelerator('activate', accel_group, key, modifier, gtk.ACCEL_VISIBLE)
+            if len(spec) > 5:
+                item.set_sensitive(spec[5])
+            if len(spec) > 6 and spec[6] is not None:
+                item.set_submenu(createMenu(spec[6], accel_group))
+        else:
+            item = gtk.SeparatorMenuItem()
+        menu.append(item)
+        item.show()
+    return menu
+
+# convenience method for creating a menu bar according to a template
+def createMenuBar(specs, accel_group):
+    menu_bar = gtk.MenuBar()
+    for label, spec in specs:
+        menu = gtk.MenuItem(label)
+        menu.set_submenu(createMenu(spec, accel_group))
+        menu_bar.append(menu)
+        menu.show()
+    return menu_bar
+
+# convenience method for packing buttons into a container according to a
+# template
+def appendButtons(box, size, specs):
+    for spec in specs:
+        if len(spec) > 0:
+            button = gtk.Button()
+            button.set_relief(gtk.RELIEF_NONE)
+            image = gtk.Image()
+            image.set_from_stock(spec[0], size)
+            button.add(image)
+            image.show()
+            if len(spec) > 2:
+                button.connect('clicked', spec[1], spec[2])
+                if len(spec) > 3:
+                    if hasattr(button, 'set_tooltip_text'):
+                        # only available in pygtk >= 2.12
+                        button.set_tooltip_text(spec[3])
+            box.pack_start(button, False, False, 0)
+            button.show()
+        else:
+            separator = gtk.VSeparator()
+            box.pack_start(separator, False, False, 5)
+            separator.show()
+
+# convenience method to request confirmation before doing an operation that
+# will cause edits to be lost
+def confirmDiscardEdits(parent):
+    dialog = MessageDialog(parent, gtk.MESSAGE_QUESTION, _('Discard unsaved changes?'))
+    end = (dialog.run() == gtk.RESPONSE_OK)
+    dialog.destroy()
+    return end
+
+# True if the string ends with '\r\n'
+def has_dos_line_ending(s):
+    return s is not None and len(s) > 1 and s[-2:] == '\r\n'
+
+# True if the string ends with '\n' but not '\r\n'
+def has_unix_line_ending(s):
+    if s is not None and len(s) > 0 and s[-1] == '\n':
+        return len(s) == 1 or s[-2] != '\r'
+    return False
+
+# masks used to indicate the presence of DOS line endings and Unix line endings
+# 0 indicates no line endings, while 3 indicates mixed line endings
+DOS_FORMAT = 1
+UNIX_FORMAT = 2
+
+def getFormat(ss):
+    flags = 0
+    for s in ss:
+        if has_dos_line_ending(s):
+            flags |= DOS_FORMAT
+        elif has_unix_line_ending(s):
+            flags |= UNIX_FORMAT
+    return flags
+
+# returns the number of characters in the string excluding any line ending
+# characters
+def len_minus_line_ending(format, s):
+    if s is None:
+        return 0
+    n = len(s)
+    if n > 0 and s[-1] == '\n':
+        if format == DOS_FORMAT and n > 1 and s[-2] == '\r':
+            n -= 2
+        else:
+            n -= 1
+    return n
+
+def strip_line_ending(format, s):
+    if s is not None:
+        return s[:len_minus_line_ending(format, s)]
+
+# the following are convenience methods to change the line ending of a string
+def convert_to_dos(s):
+    if has_unix_line_ending(s):
+        s = s[:-1] + '\r\n'
+    return s
+
+def convert_to_unix(s):
+    if has_dos_line_ending(s):
+        s = s[:-2] + '\n'
+    return s
+
+def convert_to_format(s, format):
+   if format == DOS_FORMAT:
+       s = convert_to_dos(s)
+   elif format == UNIX_FORMAT:
+       s = convert_to_unix(s)
+   return s
+
+# contains information about a file
+class FileSpec:
+    def __init__(self, name=None, revision=None, vcs=None, encoding=None):
+        self.name = name
+        self.revision = revision
+        self.vcs = vcs
+        self.encoding = encoding
+
+class VCSs:
+    # Bazaar support
+    class Bzr:
+        def __init__(self, proj_dir):
+            pass
+
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('bzr_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('bzr_bin'), 'cat', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # CVS support
+    class Cvs:
+        def getSingleFileSpecs(self, prefs, name):
+            return [ (name, prefs.getString('cvs_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('cvs_bin'), '-Q', 'update', '-p', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # Darcs support
+    class Darcs:
+        def __init__(self, proj_dir):
+            pass
+
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('darcs_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('darcs_bin'), 'show', 'contents', '-p', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # Git support
+    class Git:
+        def __init__(self, proj_dir):
+            self.proj_dir = proj_dir
+
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('git_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            name = os.path.abspath(name)
+            if name.startswith(self.proj_dir):
+                i = len(self.proj_dir)
+                while i < len(name) and name[i] == os.path.sep:
+                    i += 1
+                name = name[i:]
+            return [ prefs.getString('git_bin'), 'show', '%s:%s' % (rev, name) ]
+
+    # Mercurial support
+    class Hg:
+        def __init__(self, proj_dir):
+            pass
+
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('hg_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('hg_bin'), 'cat', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # Monotone support
+    class Mtn:
+        def __init__(self, proj_dir):
+            pass
+
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('mtn_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('mtn_bin'), 'cat', '--quiet', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # Subversion support
+    class Svn:
+        def getSingleFileSpecs(self, prefs, name):
+            # merge conflict
+            left = glob.glob(name + '.merge-left.r*')
+            right = glob.glob(name + '.merge-right.r*')
+            if len(left) > 0 and len(right) > 0:
+                return [ (left[-1], None), (name, None), (right[-1], None) ]
+            # update conflict
+            left = sorted(glob.glob(name + '.r*'))
+            right = glob.glob(name + '.mine')
+            right.extend(glob.glob(name + '.working'))
+            if len(left) > 0 and len(right) > 0:
+                return [ (left[-1], None), (name, None), (right[0], None) ]
+            # default case
+            return [ (name, prefs.getString('svn_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('svn_bin'), 'cat', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    # SVK support
+    def isSvkManaged(self, name):
+        if os.path.isfile(self.svkconfig):
+            try:
+                # find working copies by parsing the config file
+                f = open(self.svkconfig, 'r')
+                ss = f.readlines()
+                f.close()
+                projs, hash, sep = {}, False, os.sep
+                for s in ss:
+                    if s.startswith('  sep: ') and len(s) > 7:
+                        sep = s[7]
+                for s in ss:
+                    if hash:
+                        if not s.startswith('    '):
+                            break
+                        n = len(s)
+                        if n > 4 and s[4] != ' ':
+                            if s.endswith(': \n'):
+                                n -= 3
+                            tt = []
+                            i = 4
+                            while i < n: 
+                                if s[i] == '"':
+                                    i += 1
+                                    while i < n:
+                                        if s[i] == '"':
+                                            i += 1
+                                            break
+                                        elif s[i] == '\\':
+                                            i += 1
+                                        if i < n:
+                                            tt.append(s[i])
+                                            i += 1
+                                else:
+                                    tt.append(s[i])
+                                    i += 1
+                            projs[''.join(tt).replace(sep, os.sep)] = None
+                    elif s.startswith('  hash:'):
+                        hash = True
+                while True:
+                    newname = os.path.dirname(name)
+                    if newname == name:
+                        break
+                    if projs.has_key(newname):
+                        return True
+                    name = newname
+            except IOError:
+                print 'Error parsing %s.' % (config, )
+        return False
+
+    class Svk:
+        def getSingleFileSpecs(self, prefs, name):
+            # FIXME: merge conflicts?
+            return [ (name, prefs.getString('svk_default_revision')), (name, None) ]
+
+        def getRevisionCommand(self, prefs, name, rev):
+            return [ prefs.getString('svk_bin'), 'cat', '-r', rev, os.path.join(os.path.curdir, os.path.basename(name)) ]
+
+    def __init__(self):
+        if os.environ.has_key('SVKROOT'):
+            svkroot = os.environ['SVKROOT']
+        else:
+            svkroot = os.path.expanduser('~/.svk')
+        self.svkconfig = os.path.join(svkroot, 'config')
+        self.leaf_dir_repos = [('.svn', VCSs.Svn), ('CVS', VCSs.Cvs)]
+        self.common_dir_repos = [('.git', VCSs.Git), ('.hg', VCSs.Hg), ('.bzr', VCSs.Bzr), ('_darcs', VCSs.Darcs), ('_MTN', VCSs.Mtn)]
+
+    def findByFilename(self, name):
+        for dir_name, repo in self.leaf_dir_repos:
+            if os.path.isdir(os.path.join(os.path.dirname(name), dir_name)):
+                return repo()
+        name = os.path.abspath(name)
+        if self.isSvkManaged(name):
+            return VCSs.Svk()
+        while True:
+            newname = os.path.dirname(name)
+            if newname == name:
+                break
+            name = newname
+            for dir_name, repo in self.common_dir_repos:
+                if os.path.isdir(os.path.join(name, dir_name)):
+                    return repo(name)
+
+theVCSs = VCSs()
+
+# custom dialogue for picking files
+class FileChooserDialog(gtk.FileChooserDialog):
+    def __init__(self, title, parent, prefs, action, accept):
+        gtk.FileChooserDialog.__init__(self, title, parent, action, (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, accept, gtk.RESPONSE_OK))
+        self.prefs = prefs
+        hbox = gtk.HBox()
+        label = gtk.Label(_('Encoding: '))
+        hbox.pack_start(label, False, False, 0)
+        label.show()
+        self.combobox = combobox = gtk.combo_box_new_text()
+        self.encodings = prefs.getEncodings()
+        for e in self.encodings:
+            combobox.append_text(e)
+        if action == gtk.FILE_CHOOSER_ACTION_OPEN:
+            self.encodings = self.encodings[:]
+            self.encodings.insert(0, None)
+            combobox.prepend_text('Auto Detect')
+            combobox.set_active(0)
+        hbox.pack_start(combobox, False, False, 5)
+        combobox.show()
+        if action == gtk.FILE_CHOOSER_ACTION_OPEN:
+            self.revision = entry = gtk.Entry()
+            hbox.pack_end(entry, False, False, 0)
+            entry.show()
+            label = gtk.Label(_('Revision: '))
+            hbox.pack_end(label, False, False, 0)
+            label.show()
+
+        self.vbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+        self.set_current_folder(os.path.realpath(os.path.curdir))
+
+    def set_encoding(self, encoding):
+        if encoding not in self.encodings:
+            encoding = self.prefs.getDefaultEncoding()
+        if encoding in self.encodings:
+            self.combobox.set_active(self.encodings.index(encoding))
+
+    def get_encoding(self):
+        i = self.combobox.get_active()
+        if i >= 0:
+            return self.encodings[i]
+
+    def get_revision(self):
+        return self.revision.get_text()
+
+# This is a replacement for gtk.ScrolledWindow as it forced expose events to be
+# handled immediately after changing the viewport position.  This could cause
+# the application to become unresponsive for a while as it processed a large
+# queue of keypress and expose event pairs.
+class ScrolledWindow(gtk.Table):
+    def __init__(self):
+        gtk.Table.__init__(self, 2, 2)
+        self.position = (0, 0)
+        self.scroll_count = 0
+
+        vport = gtk.Viewport()
+        darea = gtk.DrawingArea()
+        self.darea = darea
+        vport.add(darea)
+        darea.show()
+        self.attach(vport, 0, 1, 0, 1)
+        vport.show()
+
+        self.vbar = bar = gtk.VScrollbar()
+        self.attach(bar, 1, 2, 0, 1, gtk.FILL, gtk.EXPAND|gtk.FILL)
+        bar.show()
+        self.vhandle = bar.get_adjustment().connect('value_changed', self.value_changed_cb)
+
+        self.hbar = bar = gtk.HScrollbar()
+        self.attach(bar, 0, 1, 1, 2, gtk.EXPAND|gtk.FILL, gtk.FILL)
+        bar.show()
+        self.hhandle = bar.get_adjustment().connect('value_changed', self.value_changed_cb)
+
+        darea.connect('configure_event', self.configure_cb)
+        darea.connect('scroll_event', self.scroll_cb)
+        darea.connect('expose_event', self.expose_cb)
+
+    def set_vadjustment(self, adj):
+        self.get_vadjustment().disconnect(self.vhandle)
+        self.vhandle = adj.connect('value_changed', self.value_changed_cb)
+        self.vbar.set_adjustment(adj)
+
+    def get_vadjustment(self):
+        return self.vbar.get_adjustment()
+
+    def set_hadjustment(self, adj):
+        self.get_hadjustment().disconnect(self.hhandle)
+        self.hbar.set_adjustment(adj)
+        self.hhandle = adj.connect('value_changed', self.value_changed_cb)
+
+    def get_hadjustment(self):
+        return self.hbar.get_adjustment()
+
+    def configure_cb(self, widget, event):
+        w, h = event.width, event.height
+
+        adj = self.get_hadjustment()
+        v = adj.get_value()
+        if v + w > adj.upper:
+            adj.set_value(max(0, adj.upper - w))
+        adj.page_size = w
+        adj.page_increment = w
+
+        adj = self.get_vadjustment()
+        v = adj.get_value()
+        if v + h > adj.upper:
+            adj.set_value(max(0, adj.upper - h))
+        adj.page_size = h
+        adj.page_increment = h
+
+    def scroll_cb(self, widget, event):
+        vadj = self.get_vadjustment()
+        v = vadj.get_value()
+        delta = 100
+        if event.direction == gtk.gdk.SCROLL_UP:
+            delta = -delta
+        v = max(v + delta, int(vadj.lower))
+        v = min(v, int(vadj.upper - vadj.page_size))
+        vadj.set_value(v)
+
+    def value_changed_cb(self, widget):
+        old_x, old_y = self.position
+        pos_x = int(self.get_hadjustment().get_value())
+        pos_y = int(self.get_vadjustment().get_value())
+        self.position = (pos_x, pos_y)
+        if self.darea.window is not None:
+            if self.scroll_count < 2:
+                self.scroll_count += 1
+                self.darea.window.scroll(old_x - pos_x, old_y - pos_y)
+            else:
+                self.darea.queue_draw()
+
+    def expose_cb(self, widget, event):
+        self.scroll_count = 0
+
+# dialogue used to search for text
+class GoToLineDialog(gtk.Dialog):
+    def __init__(self, parent):
+        gtk.Dialog.__init__(self, _('Go To Line...'), parent, gtk.DIALOG_MODAL | gtk.DIALOG_DESTROY_WITH_PARENT, (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
+
+        vbox = gtk.VBox()
+        vbox.set_border_width(10)
+
+        hbox = gtk.HBox()
+        label = gtk.Label(_('Line Number: '))
+        hbox.pack_start(label, False, False, 0)
+        label.show()
+        self.entry = entry = gtk.Entry()
+        entry.connect('activate', self.entry_cb)
+        hbox.pack_start(entry, True, True, 0)
+        entry.show()
+
+        vbox.pack_start(hbox, True, True, 0)
+        hbox.show()
+
+        self.vbox.pack_start(vbox, False, False, 0)
+        vbox.show()
+
+    def entry_cb(self, widget):
+        self.response(gtk.RESPONSE_ACCEPT)
+
+# establish callback for the about dialog's link to Diffuse's web site
+def url_hook(dialog, link, userdata):
+    webbrowser.open(link)
+
+gtk.about_dialog_set_url_hook(url_hook, None)
+
+class AboutDialog(gtk.AboutDialog):
+    def __init__(self):
+        gtk.AboutDialog.__init__(self)
+        if hasattr(self, 'set_program_name'):
+            # only available in pygtk >= 2.12
+            self.set_program_name(APP_NAME)
+        self.set_version(VERSION)
+        self.set_comments(_('A file comparison and merge tool.'))
+        self.set_copyright(COPYRIGHT)
+        self.set_website(WEBSITE)
+        self.set_authors([ 'Derrick Moser <derrick_moser@yahoo.com>' ])
+        ss = [ APP_NAME + ' ' + VERSION + '\n',
+               self.get_comments() + '\n',
+               COPYRIGHT + '\n\n',
+               _("""This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the licence, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program.  You may also obtain a copy of the GNU General Public License from the Free Software Foundation by visiting their web site (http://www.fsf.org/) or by writing to the Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+""") ]
+        self.set_license(''.join(ss))
+        self.set_wrap_license(True)
+
+def nullToEmpty(s):
+    if s is None:
+        s = ''
+    return s
+
+def isBlank(s):
+    for c in string.whitespace:
+        s = s.replace(c, '')
+    return len(s) == 0
+
+# use pango.SCALE instead of pango.PIXELS to avoid overflow exception
+def pixels(size):
+    return int(size / pango.SCALE + 0.5)
+
+LINE_MODE = 0
+CHAR_MODE = 1
+ALIGN_MODE = 2
+
+# widget used to compare and merge text files
+class FileDiffViewer(gtk.Table):
+    # class describing a text file
+    class File:
+        def __init__(self):
+            self.lines = []
+            self.spec = FileSpec()
+            self.label = ''
+            self.line_lengths = 0
+            self.max_line_number = 0
+            self.syntax_cache = []
+            self.diff_cache = []
+            self.format = 0
+            self.stat = None
+
+        def hasEdits(self):
+            for line in self.lines:
+                if line is not None and line.is_modified:
+                    return True
+            return False
+
+    # class describing a single line of a file
+    class Line:
+        def __init__(self, line_number = None, text = None):
+            self.line_number = line_number
+            self.text = text
+            self.is_modified = False
+            self.modified_text = None
+            self.compare_string = None
+
+        def getText(self):
+            if self.is_modified:
+                return self.modified_text
+            return self.text
+
+    def __init__(self, n, prefs):
+        # figure out how many file panes we should have
+        if n < 2:
+            n = 2
+
+        gtk.Table.__init__(self, 3, n + 1)
+        self.set_flags(gtk.CAN_FOCUS)
+        self.prefs = prefs
+
+        # diff blocks
+        self.blocks = []
+        self.labels = []
+
+        # undos
+        self.undos = []
+        self.redos = []
+        self.undoblock = None
+
+        # cached data
+        self.syntax = None
+        self.map_cache = None
+
+        # editing mode
+        self.mode = LINE_MODE
+        self.current_file = 1
+        self.current_line = 0
+        self.current_char = 0
+        self.selection_line = 0
+        self.selection_char = 0
+        self.align_file = 0
+        self.align_line = 0
+        self.cursor_column = -1
+
+        # keybindings
+        self._line_mode_actions = {
+                'enter_align_mode': self._line_mode_enter_align_mode,
+                'enter_character_mode': self.setCharMode,
+                'first_line': self._first_line,
+                'extend_first_line': self._extend_first_line,
+                'last_line': self._last_line,
+                'extend_last_line': self._extend_last_line,
+                'up': self._line_mode_up,
+                'extend_up': self._line_mode_extend_up,
+                'down': self._line_mode_down,
+                'extend_down': self._line_mode_extend_down,
+                'left': self._line_mode_left,
+                'extend_left': self._line_mode_extend_left,
+                'right': self._line_mode_right,
+                'extend_right': self._line_mode_extend_right,
+                'page_up': self._line_mode_page_up,
+                'extend_page_up': self._line_mode_extend_page_up,
+                'page_down': self._line_mode_page_down,
+                'extend_page_down': self._line_mode_extend_page_down,
+                'delete_text': self._delete_text,
+                'merge_from_left': self._merge_from_left,
+                'merge_from_right': self._merge_from_right,
+                'first_difference': self._first_difference,
+                'previous_difference': self._previous_difference,
+                'next_difference': self._next_difference,
+                'last_difference': self._last_difference,
+                'isolate': self._isolate }
+        self._align_mode_actions = {
+                'enter_line_mode': self._align_mode_enter_line_mode,
+                'enter_character_mode': self.setCharMode,
+                'first_line': self._first_line,
+                'last_line': self._last_line,
+                'up': self._line_mode_up,
+                'down': self._line_mode_down,
+                'left': self._line_mode_left,
+                'right': self._line_mode_right,
+                'page_up': self._line_mode_page_up,
+                'page_down': self._line_mode_page_down,
+                'align': self._align_text }
+        self._character_mode_actions = {
+                'enter_line_mode': self.setLineMode }
+
+        # create file panes
+        self.dareas = []
+        self.files = []
+        self.hadj = None
+        self.vadj = None
+        for i in range(n):
+            file = FileDiffViewer.File()
+            self.files.append(file)
+
+            # file header
+            hbox = gtk.HBox()
+            appendButtons(hbox, gtk.ICON_SIZE_MENU, [
+               [ gtk.STOCK_OPEN, self.open_file_button_cb, i, _('Open File...') ],
+               [ gtk.STOCK_REFRESH, self.reload_file_button_cb, i, _('Reload File') ],
+               [ gtk.STOCK_SAVE, self.save_file_button_cb, i, _('Save File') ],
+               [ gtk.STOCK_SAVE_AS, self.save_file_as_button_cb, i, _('Save File As...') ] ])
+            label = gtk.Label()
+            self.labels.append(label)
+            label.set_size_request(0, label.get_size_request()[1])
+            hbox.pack_start(label, True, True, 0)
+            label.show()
+            self.attach(hbox, i, i + 1, 0, 1, gtk.FILL, gtk.FILL)
+            hbox.show()
+
+            # file contents
+            sw = ScrolledWindow()
+            darea = sw.darea
+            darea.add_events(gtk.gdk.BUTTON_PRESS_MASK | gtk.gdk.BUTTON1_MOTION_MASK)
+            darea.connect('button_press_event', self.darea_button_press_cb)
+            darea.connect('motion_notify_event', self.darea_motion_notify_cb)
+            darea.connect('expose_event', self.darea_expose_cb)
+            self.dareas.append(darea)
+            if self.hadj is None:
+                self.hadj = sw.get_hadjustment()
+                self.vadj = sw.get_vadjustment()
+            else:
+                sw.set_hadjustment(self.hadj)
+                sw.set_vadjustment(self.vadj)
+            self.attach(sw, i, i + 1, 1, 2)
+            sw.show()
+        self.vadj.connect('value_changed', self.map_vadj_changed)
+
+        # add diff map
+        self.map = map = gtk.DrawingArea()
+        map.add_events(gtk.gdk.BUTTON_PRESS_MASK | gtk.gdk.BUTTON1_MOTION_MASK)
+        map.connect('button_press_event', self.map_button_press_cb)
+        map.connect('motion_notify_event', self.map_button_press_cb)
+        map.connect('scroll_event', self.map_scroll_cb)
+        map.connect('expose_event', self.map_expose_cb)
+        self.attach(map, n, n + 1, 1, 2, gtk.FILL, gtk.FILL)
+        map.show()
+        map.set_size_request(16 * n, 0)
+        self.add_events(gtk.gdk.KEY_PRESS_MASK)
+        self.connect('key_press_event', self.key_press_cb)
+
+        # Add a status bar to the botton
+        self.statusbar = statusbar = gtk.Statusbar()
+        self.status_context = statusbar.get_context_id('Message')
+        self.attach(statusbar, 0, n + 1, 2, 3, gtk.FILL, gtk.FILL)
+        statusbar.show()
+
+        # font
+        self.setFont(pango.FontDescription(prefs.getString('display_font')))
+
+        # scroll to first difference when realised
+        darea.connect_after('realize', self._realise_cb)
+
+    def setFont(self, font):
+        self.font = font
+        metrics = self.get_pango_context().get_metrics(self.font)
+        self.font_height = max(pixels(metrics.get_ascent() + metrics.get_descent()), 1)
+        self.digit_width = metrics.get_approximate_digit_width()
+        self.updateSize(True)
+        self.map.queue_draw()
+
+    def getStringColumnWidth(self, f, s):
+        if self.prefs.getBool('display_hide_endofline'):
+            s = strip_line_ending(self.files[f].format, s)
+        col = 0
+        tab_width = self.prefs.getInt('display_tab_width')
+        for c in s:
+            v = ord(c)
+            if v < 32:
+                if c == '\t':
+                    col += tab_width - col % tab_width
+                else:
+                    col += 2
+            elif v >= 0x1100 and (v <= 0x115f
+                or v == 0x2329
+                or v == 0x232a
+                or (v >= 0x2e80 and v <= 0xa4cf and v != 0x303f)
+                or (v >= 0xac00 and v <= 0xd7a3)
+                or (v >= 0xf900 and v <= 0xfaff)
+                or (v >= 0xfe30 and v <= 0xfe6f)
+                or (v >= 0xff00 and v <= 0xff60)
+                or (v >= 0xffe0 and v <= 0xffe6)
+                or (v >= 0x20000 and v <= 0x2ffff)):
+                col += 2
+            else:
+                col += 1
+        return col
+
+    def characterWidth(self, i, c):
+        v = ord(c)
+        if v < 32:
+            if c == '\t':
+                tab_width = self.prefs.getInt('display_tab_width')
+                return tab_width - i % tab_width
+            return 2
+        if v >= 0x1100 and (v <= 0x115f
+            or v == 0x2329 or v == 0x232a
+            or (v >= 0x2e80 and v <= 0xa4cf and v != 0x303f)
+            or (v >= 0xac00 and v <= 0xd7a3)
+            or (v >= 0xf900 and v <= 0xfaff)
+            or (v >= 0xfe30 and v <= 0xfe6f)
+            or (v >= 0xff00 and v <= 0xff60)
+            or (v >= 0xffe0 and v <= 0xffe6)
+            or (v >= 0x20000 and v <= 0x2ffff)):
+            return 2
+        return 1
+
+    def stringWidth(self, f, s):
+        if self.prefs.getBool('display_hide_endofline'):
+            s = strip_line_ending(self.files[f].format, s)
+        w, width = 0, self.characterWidth
+        for c in s:
+            w += width(w, c)
+        return w
+
+    def expand(self, f, s):
+        if self.prefs.getBool('display_hide_endofline'):
+            s = strip_line_ending(self.files[f].format, s)
+        tab_width = self.prefs.getInt('display_tab_width')
+        col = 0
+        result = []
+        for c in s:
+            v = ord(c)
+            if v < 32:
+                if c == '\t':
+                    width = tab_width - col % tab_width
+                    result.append(width * ' ')
+                else:
+                    result.append('^' + chr(v + 64))
+            else:
+                result.append(c)
+            col += self.characterWidth(col, c)
+        return result
+
+    def setLineMode(self):
+        if self.mode == CHAR_MODE:
+            self.dareas[self.current_file].queue_draw()
+            self.current_char = 0
+            self.selection_char = 0
+        elif self.mode == ALIGN_MODE:
+            self.dareas[self.align_file].queue_draw()
+            self.dareas[self.current_file].queue_draw()
+            self.align_file = 0
+            self.align_line = 0
+        self.mode = LINE_MODE
+        self.updatePrompt()
+
+    def setCharMode(self):
+        if self.mode == LINE_MODE:
+            self.cursor_column = -1
+            self.setCurrentChar(self.current_line, 0)
+        elif self.mode == ALIGN_MODE:
+            self.dareas[self.align_file].queue_draw()
+            self.cursor_column = -1
+            self.align_file = 0
+            self.align_line = 0
+            self.setCurrentChar(self.current_line, 0)
+        self.mode = CHAR_MODE
+        self.updatePrompt()
+
+    def setSyntax(self, syntax):
+        if self.syntax is not syntax:
+            self.syntax = syntax
+            for file in self.files:
+                file.syntax_cache = []
+            for darea in self.dareas:
+                darea.queue_draw()
+
+    def hasEdits(self):
+        for file in self.files:
+            if file.hasEdits():
+                return True
+        return False
+
+    def setStatus(self, text):
+        self.statusbar.pop(self.status_context)
+        self.statusbar.push(self.status_context, text)
+
+    def openUndoBlock(self):
+        self.undoblock = []
+
+    def addUndo(self, u):
+        self.undoblock.append(u)
+
+    def closeUndoBlock(self):
+        if len(self.undoblock) > 0:
+            self.redos = []
+            self.undos.append(self.undoblock)
+        self.undoblock = None
+
+    def undo(self):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            if len(self.undos) > 0:
+                block = self.undos.pop()
+                self.redos.append(block)
+                for u in block[::-1]:
+                    u.undo(self)
+
+    def redo(self):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            if len(self.redos) > 0:
+                block = self.redos.pop()
+                self.undos.append(block)
+                for u in block:
+                    u.redo(self)
+
+    def getNumLineNumberDigits(self):
+        n = 0
+        for file in self.files:
+            n = max(n, len(str(file.max_line_number)))
+        return n
+
+    def getLineNumberWidth(self):
+        return (self.getNumLineNumberDigits() + 2) * self.digit_width
+
+    def getTextWidth(self, text):
+        layout = self.create_pango_layout(text)
+        layout.set_font_description(self.font)
+        return layout.get_size()[0]
+
+    def updateSize(self, compute_width, f=None):
+        if compute_width:
+            if f is None:
+                files = self.files
+            else:
+                files = [ self.files[f] ]
+            for f, file in enumerate(files):
+                del file.syntax_cache[:]
+                del file.diff_cache[:]
+                file.line_lengths = 0
+                for line in file.lines:
+                    if line is not None:
+                        line.compare_string = None
+                        text = [ line.text ]
+                        if line.is_modified:
+                            text.append(line.modified_text)
+                        for s in text:
+                            if s is not None:
+                                file.line_lengths = max(file.line_lengths, self.digit_width * self.getStringColumnWidth(f, s))
+        num_lines, line_lengths = 0, 0
+        for file in self.files:
+            num_lines = max(num_lines, len(file.lines))
+            line_lengths = max(line_lengths, file.line_lengths)
+        num_lines += 1
+        width = self.getLineNumberWidth() + self.digit_width + line_lengths
+        width = pixels(width)
+        height = self.font_height * num_lines
+        self.hadj.upper = width
+        self.hadj.step_increment = self.font_height
+        self.vadj.upper = height
+        self.vadj.step_increment = self.font_height
+
+    def getLine(self, f, i):
+        lines = self.files[f].lines
+        if i < len(lines):
+            return lines[i]
+
+    def getLineText(self, f, i):
+        line = self.getLine(f, i)
+        if line is not None:
+            return line.getText()
+
+    class SetFormatUndo:
+        def __init__(self, f, format, old_format):
+            self.data = (f, format, old_format)
+
+        def undo(self, viewer):
+            f, format, old_format = self.data
+            viewer.setFormat(f, old_format)
+
+        def redo(self, viewer):
+            f, format, old_format = self.data
+            viewer.setFormat(f, format)
+
+    def setFormat(self, f, format):
+        file = self.files[f]
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.SetFormatUndo(f, format, file.format))
+        file.format = format
+
+    class InstanceLineUndo:
+        def __init__(self, f, i, reverse):
+            self.data = (f, i, reverse)
+
+        def undo(self, viewer):
+            f, i, reverse = self.data
+            viewer.instanceLine(f, i, not reverse)
+
+        def redo(self, viewer):
+            f, i, reverse = self.data
+            viewer.instanceLine(f, i, reverse)
+
+    def instanceLine(self, f, i, reverse=False):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.InstanceLineUndo(f, i, reverse))
+        file = self.files[f]
+        if reverse:
+            file.lines[i] = None
+        else:
+            line = FileDiffViewer.Line()
+            file.lines[i] = line
+
+    class UpdateLineTextUndo:
+        def __init__(self, f, i, old_is_modified, old_text, is_modified, text):
+            self.data = (f, i, old_is_modified, old_text, is_modified, text)
+
+        def undo(self, viewer):
+            f, i, old_is_modified, old_text, is_modified, text = self.data
+            viewer.updateLineText(f, i, old_is_modified, old_text)
+
+        def redo(self, viewer):
+            f, i, old_is_modified, old_text, is_modified, text = self.data
+            viewer.updateLineText(f, i, is_modified, text)
+
+    def getMapFlags(self, f, i):
+        flags = 0
+        compare_text = self.getCompareString(f, i)
+        if f > 0 and self.getCompareString(f - 1, i) != compare_text:
+            flags |= 1
+        if f + 1 < len(self.files) and self.getCompareString(f + 1, i) != compare_text:
+            flags |= 2
+        line = self.getLine(f, i)
+        if line is not None and line.is_modified:
+            flags |= 4
+        return flags
+
+    def updateLineText(self, f, i, is_modified, text):
+        file = self.files[f]
+        line = file.lines[i]
+        flags = self.getMapFlags(f, i)
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.UpdateLineTextUndo(f, i, line.is_modified, line.modified_text, is_modified, text))
+        line.is_modified = is_modified
+        line.modified_text = text
+        line.compare_string = None
+
+        if text is not None:
+            file.line_lengths = max(file.line_lengths, self.digit_width * self.getStringColumnWidth(f, text))
+        self.updateSize(False)
+
+        y = int(self.vadj.get_value())
+        h = self.font_height
+        fs = []
+        if f > 0:
+            fs.append(f - 1)
+        if f + 1 < len(self.files):
+            fs.append(f + 1)
+        for fn in fs:
+            otherfile = self.files[fn]
+            if i < len(otherfile.diff_cache):
+                otherfile.diff_cache[i] = None
+            darea = self.dareas[fn]
+            darea.queue_draw_area(0, i * h - y, darea.get_allocation().width, h)
+        if i < len(file.syntax_cache):
+            del file.syntax_cache[i:]
+        if i < len(file.diff_cache):
+            file.diff_cache[i] = None
+        self.dareas[f].queue_draw()
+        if self.getMapFlags(f, i) != flags:
+            self.map_cache = None
+            self.map.queue_draw()
+
+    class InsertNullUndo:
+        def __init__(self, f, i, reverse):
+            self.data = (f, i, reverse)
+
+        def undo(self, viewer):
+            f, i, reverse = self.data
+            viewer.insertNull(f, i, not reverse)
+
+        def redo(self, viewer):
+            f, i, reverse = self.data
+            viewer.insertNull(f, i, reverse)
+
+    def insertNull(self, f, i, reverse):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.InsertNullUndo(f, i, reverse))
+        file = self.files[f]
+        lines = file.lines
+        if reverse:
+            del lines[i]
+            if i < len(file.syntax_cache):
+                del file.syntax_cache[i]
+        else:
+            lines.insert(i, None)
+            if i < len(file.syntax_cache):
+                state = file.syntax_cache[i][0]
+                file.syntax_cache.insert(i, [state, state, None, None])
+
+    class InvalidateLineMatchingUndo:
+        def __init__(self, i, n, new_n):
+            self.data = (i, n, new_n)
+
+        def undo(self, viewer):
+            i, n, new_n = self.data
+            viewer.invalidateLineMatching(i, new_n, n)
+
+        def redo(self, viewer):
+            i, n, new_n = self.data
+            viewer.invalidateLineMatching(i, n, new_n)
+
+    def invalidateLineMatching(self, i, n, new_n):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.InvalidateLineMatchingUndo(i, n, new_n))
+        i2 = i + n
+        for f, file in enumerate(self.files):
+            if i < len(file.diff_cache):
+                if i2 + 1 < len(file.diff_cache):
+                    file.diff_cache[i:i2] = new_n * [ None ]
+                else:
+                    del file.diff_cache[i:]
+            self.dareas[f].queue_draw()
+        self.updateSize(False)
+        self.map_cache = None
+        self.map.queue_draw()
+
+    def updateAlignment(self, i, n, lines):
+        new_n = len(lines[0])
+        i2 = i + n
+        for f in range(len(self.files)):
+            for j in range(i2-1, i-1, -1):
+                if self.getLine(f, j) is None:
+                    self.insertNull(f, j, True)
+            temp = lines[f]
+            for j in range(new_n):
+                if temp[j] is None:
+                    self.insertNull(f, i + j, False)
+        # FIXME: we should be able to do something more intelligent here...
+        # the syntax cache will become invalidated.... we don't really need to
+        # do that...
+        self.invalidateLineMatching(i, n, new_n)
+
+    class UpdateBlocksUndo:
+        def __init__(self, old_blocks, blocks):
+            self.data = (old_blocks, blocks)
+
+        def undo(self, viewer):
+            old_blocks, blocks = self.data
+            viewer.updateBlocks(old_blocks)
+
+        def redo(self, viewer):
+            old_blocks, blocks = self.data
+            viewer.updateBlocks(blocks)
+
+    def updateBlocks(self, blocks):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.UpdateBlocksUndo(self.blocks, blocks))
+        self.blocks = blocks
+
+    def insertLines(self, i, n):
+        # insert lines
+        self.updateAlignment(i, 0, [ n * [ None ] for file in self.files ])
+        pre, post = cutBlocks(i, self.blocks)
+        pre.append(n)
+        pre.extend(post)
+        self.updateBlocks(pre)
+
+        # update selection
+        if self.current_line >= i:
+            self.current_line += n
+        if self.selection_line >= i:
+            self.selection_line += n
+        # queue redraws
+        self.updateSize(False)
+        self.map_cache = None
+        self.map.queue_draw()
+
+    class ReplaceLinesUndo:
+        def __init__(self, f, lines, new_lines, max_num, new_max_num):
+            self.data = (f, lines, new_lines, max_num, new_max_num)
+
+        def undo(self, viewer):
+            f, lines, new_lines, max_num, new_max_num = self.data
+            viewer.replaceLines(f, new_lines, lines, new_max_num, max_num)
+
+        def redo(self, viewer):
+            f, lines, new_lines, max_num, new_max_num = self.data
+            viewer.replaceLines(f, lines, new_lines, max_num, new_max_num)
+
+    def replaceLines(self, f, lines, new_lines, max_num, new_max_num):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.ReplaceLinesUndo(f, lines, new_lines, max_num, new_max_num))
+        file = self.files[f]
+        file.lines = new_lines
+        del file.syntax_cache[:]
+        file.max_line_number = new_max_num
+        self.dareas[f].queue_draw()
+        self.updateSize(True, f)
+        self.map_cache = None
+        self.map.queue_draw()
+
+    def stringHash(self, line):
+        text = line.getText()
+        if text is None:
+            return ''
+        if self.prefs.getBool('align_ignore_blanklines') and isBlank(text):
+            return '+'
+        if self.prefs.getBool('align_ignore_whitespace'):
+            for c in string.whitespace:
+                text = text.replace(c, '')
+        elif self.prefs.getBool('align_ignore_whitespace_changes'):
+            pc = True
+            r = []
+            append = r.append
+            for c in text:
+                if c in string.whitespace:
+                    if pc:
+                       append(' ')
+                       pc = False
+                else:
+                    append(c)
+                    pc = True
+            text = ''.join(r)
+        if self.prefs.getBool('align_ignore_case'):
+            text = text.upper()
+        return '+' + text
+
+    def alignBlocks(self, leftblocks, leftlines, rightblocks, rightlines):
+        blocks = [ leftblocks, rightblocks ]
+        lines = [ leftlines, rightlines ]
+        middle = [ leftlines[-1], rightlines[0] ]
+        mlines = [ [ line for line in middle[0] if line is not None ],
+                   [ line for line in middle[1] if line is not None ] ]
+        s1 = mlines[0]
+        s2 = mlines[1]
+        n1 = 0
+        n2 = 0
+        t1 = [ self.stringHash(s) for s in s1 ]
+        t2 = [ self.stringHash(s) for s in s2 ]
+        for block in difflib.SequenceMatcher(None, t1, t2).get_matching_blocks():
+            delta = (n1 + block[0]) - (n2 + block[1])
+            if delta < 0:
+                i = n1 + block[0]
+                s1[i:i] = -delta * [ None ]
+                n1 -= delta
+            elif delta > 0:
+                i = n2 + block[1]
+                s2[i:i] = delta * [ None ]
+                n2 += delta
+        nmatch = len(s1)
+
+        i = 0
+        k = 0
+        bi = [ 0, 0 ]
+        bn = [ 0, 0 ]
+        while True:
+            insert = [ i >= len(m) for m in middle  ]
+            if insert == [ True, True ]:
+                break
+            if insert == [ False, False ] and k < nmatch:
+                accept = True
+                for j in range(2):
+                    m = mlines[j][k]
+                    if middle[j][i] is not m:
+                        if m is None:
+                            insert[j] = True
+                        else:
+                            accept = False
+                if accept:
+                    k += 1
+                else:
+                    insert = [ m[i] is not None for m in middle ]
+            for j in range(2):
+                if insert[j]:
+                    for temp in lines[j]:
+                        temp.insert(i, None)
+                    blocksj = blocks[j]
+                    bij = bi[j]
+                    bnj = bn[j]
+                    if len(blocksj) == 0:
+                        blocksj.append(0)
+                    while bnj + blocksj[bij] < i:
+                        bnj += blocksj[bij]
+                        bij += 1
+                    blocksj[bij] += 1
+            i += 1
+
+    def updateFile(self, f, ss):
+        self.setFormat(f, getFormat(ss))
+        # align
+        blocks = []
+        n = len(ss)
+        if n > 0:
+            blocks.append(n)
+        mid = [ [ FileDiffViewer.Line(j + 1, ss[j]) for j in range(n) ] ]
+        if f > 0:
+            leftblocks = self.blocks[:]
+            leftlines = [ file.lines[:] for file in self.files[:f] ]
+            removeNullLines(leftblocks, leftlines)
+            self.alignBlocks(leftblocks, leftlines, blocks, mid)
+            mid[:0] = leftlines
+            blocks = mergeBlocks(leftblocks, blocks)
+        if f + 1 < len(self.files):
+            rightblocks = self.blocks[:]
+            rightlines = [ file.lines[:] for file in self.files[f + 1:] ]
+            removeNullLines(rightblocks, rightlines)
+            self.alignBlocks(blocks, mid, rightblocks, rightlines)
+            mid.extend(rightlines)
+            blocks = mergeBlocks(blocks, rightblocks)
+
+        # update
+        file = self.files[f]
+        old_n = len(file.lines)
+        new_n = len(mid[f])
+        self.replaceLines(f, file.lines, mid[f], file.max_line_number, n)
+        for f_idx in range(len(self.files)):
+            if f_idx != f:
+                for j in range(old_n-1, -1, -1):
+                    if self.getLine(f_idx, j) is None:
+                        self.insertNull(f_idx, j, True)
+                temp = mid[f_idx]
+                for j in range(new_n):
+                    if temp[j] is None:
+                        self.insertNull(f_idx, j, False)
+        self.invalidateLineMatching(0, old_n, new_n)
+        self.updateBlocks(blocks)
+
+    def setLabel(self, f, s):
+        self.files[f].label = s
+        self.labels[f].set_text(s)
+
+    def load(self, f, spec):
+        name = spec.name
+        stat = None
+        if name is not None:
+            rev = spec.revision
+            try:
+                if rev is not None:
+                    if spec.vcs is None:
+                        raise IOError('Not under revision control.')
+                    label = '%s (%s)' % (name, rev)
+                    fullname = os.path.abspath(name)
+                    cmd = spec.vcs.getRevisionCommand(self.prefs, fullname, rev)
+                    dn = os.path.dirname(fullname)
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, cwd=dn)
+                    fd = proc.stdout
+                else:
+                    label = name
+                    fd = open(name, 'rb')
+                    stat = os.stat(name)
+                ss = fd.readlines()
+                fd.close()
+                if rev is not None and proc.wait() != 0:
+                    raise IOError('Command failed.')
+                if spec.encoding is None:
+                    ss, spec.encoding = self.prefs.convertToUnicode(ss)
+                else:
+                    ss = [ unicode(s, spec.encoding) for s in ss ]
+            except (IOError, UnicodeDecodeError):
+                # FIXME: this can occur before the toplevel window is drawn
+                if rev is not None:
+                    msg = 'Error reading revision %(rev)s of "%(file)s".' % { 'rev': rev, 'file': name }
+                else:
+                    msg = 'Error reading %s.' % (repr(name), )
+                dialog = MessageDialog(self.get_toplevel(), gtk.MESSAGE_ERROR, msg)
+                dialog.run()
+                dialog.destroy()
+                return
+        else:
+            label = ''
+            ss = []
+        self.updateFile(f, ss)
+        self.files[f].spec = spec
+        self.files[f].stat = stat
+        self.setLabel(f, label)
+        if name is not None:
+            syntax = theResources.getSyntaxByFilename(name)
+            if syntax is not None:
+                self.setSyntax(syntax)
+
+    def updateText(self, f, i, text, is_modified=True):
+        if self.files[f].lines[i] is None:
+            self.instanceLine(f, i)
+        self.updateLineText(f, i, is_modified, text)
+
+    def replaceText(self, text):
+        # find range
+        self.recordEditMode()
+        f = self.current_file
+        file = self.files[f]
+        line0 = self.selection_line
+        line1 = self.current_line
+        if self.mode == LINE_MODE:
+            col0 = 0
+            col1 = 0
+            if line1 < line0:
+                line0, line1 = line1, line0
+            if line1 < len(file.lines):
+                line1 += 1
+        else:
+            col0 = self.selection_char
+            col1 = self.current_char
+            if line1 < line0 or (line1 == line0 and col1 < col0):
+                line0, col0, line1, col1 = line1, col1, line0, col0
+        # update text
+        if text is None:
+            text = ''
+        ss = text.split('\n')
+        last = ss.pop()
+        ss = [ s + '\n' for s in ss ]
+        ss.append(last)
+        if file.format == 0:
+            self.setFormat(f, getFormat(ss))
+        ss = [ convert_to_format(s, file.format) for s in ss ]
+        if col0 > 0:
+            pre = self.getLineText(f, line0)[:col0]
+            ss[0] = pre + ss[0]
+        last = ss.pop()
+        cur_line = line0 + len(ss)
+        lastcol = len(last)
+        if lastcol > 0:
+            # need more text
+            while line1 < len(file.lines):
+                s = self.getLineText(f, line1)
+                line1 += 1
+                if s is not None:
+                    last = last + s[col1:]
+                    break
+                col1 = 0
+            ss.append(last)
+        elif col1 > 0:
+            s = self.getLineText(f, line1)
+            ss.append(s[col1:])
+            line1 += 1
+        n_have = line1 - line0
+        n_need = len(ss)
+        if n_need > n_have:
+            self.insertLines(line1, n_need - n_have)
+        for i, s in enumerate(ss):
+            self.updateText(f, line0 + i, s)
+        if n_have > n_need:
+            for i in range(n_need, n_have):
+                self.updateText(f, line0 + i, None)
+        # update selection
+        if self.mode == LINE_MODE:
+            self.selection_line = line0
+            self.setCurrentLine(f, line0 + max(n_need, n_have) - 1, True)
+        else:
+            self.setCurrentChar(cur_line, lastcol, False)
+        self.recordEditMode()
+
+    def align(self, f, line1, line2):
+        self.recordEditMode()
+
+        # find blocks
+        start = line1
+        end = line2
+        if end < start:
+            start, end = end, start
+        pre_blocks = []
+        mid = []
+        post_blocks = []
+        n = 0
+        for b in self.blocks:
+            if n + b <= start:
+                dst = pre_blocks
+            elif n <= end:
+                dst = mid
+            else:
+                dst = post_blocks
+            dst.append(b)
+            n += b
+        start = sum(pre_blocks)
+        end = start + sum(mid)
+
+        # cut into sections
+        lines_s = [ [], [], [] ]
+        cutblocks = [ [], [], [] ]
+        lines = [ file.lines for file in self.files ]
+        nlines = len(lines[0])
+        for temp, m in zip([ lines[:f + 1], lines[f + 1:] ], [ line1, line2 ]):
+            lines_s[0].append([ s[start:m] for s in temp ])
+            pre, post = cutBlocks(m - start, mid)
+            if len(temp) == 1:
+                s = sum(pre)
+                if s == 0:
+                    pre = []
+                else:
+                    pre = [ s ]
+            cutblocks[0].append(pre)
+            if m < nlines:
+                m1 = [ [ s[m] ] for s in temp ]
+                m2 = [ s[m + 1:end] for s in temp ]
+                b1, b2 = cutBlocks(1, post)
+                if len(temp) == 1:
+                    s = sum(b2)
+                    if s == 0:
+                        b2 = []
+                    else:
+                        b2 = [ s ]
+            else:
+                m1 = [ [] for s in temp ]
+                m2 = [ [] for s in temp ]
+                b1, b2 = [], []
+            lines_s[1].append(m1)
+            lines_s[2].append(m2)
+            cutblocks[1].append(b1)
+            cutblocks[2].append(b2)
+
+        finallines = [ [] for s in lines ]
+        for b, lines_t in zip(cutblocks, lines_s):
+            removeNullLines(b[0], lines_t[0])
+            removeNullLines(b[1], lines_t[1])
+            self.alignBlocks(b[0], lines_t[0], b[1], lines_t[1])
+            temp = lines_t[0]
+            temp.extend(lines_t[1])
+            for dst, s in zip(finallines, temp):
+                dst.extend(s)
+            pre_blocks.extend(mergeBlocks(b[0], b[1]))
+        pre_blocks.extend(post_blocks)
+
+        self.updateAlignment(start, end - start, finallines)
+        self.updateBlocks(pre_blocks)
+
+        # update selection
+        self.setCurrentLine(self.current_file, start + len(lines_s[0][0][0]))
+        self.recordEditMode()
+
+    class EditModeUndo:
+        def __init__(self, mode, current_file, current_line, current_char, selection_line, selection_char, cursor_column):
+            self.data = (mode, current_file, current_line, current_char, selection_line, selection_char, cursor_column)
+
+        def undo(self, viewer):
+            mode, current_file, current_line, current_char, selection_line, selection_char, cursor_column = self.data
+            viewer.setEditMode(mode, current_file, current_line, current_char, selection_line, selection_char, cursor_column)
+
+        def redo(self, viewer):
+            self.undo(viewer)
+
+    def recordEditMode(self):
+        self.addUndo(FileDiffViewer.EditModeUndo(self.mode, self.current_file, self.current_line, self.current_char, self.selection_line, self.selection_char, self.cursor_column))
+
+    def setEditMode(self, mode, f, current_line, current_char, selection_line, selection_char, cursor_column):
+        # FIXME: this should also record the scroll spot
+        old_f = self.current_file
+        self.mode = mode
+        self.current_file = f
+        self.current_line = current_line
+        self.current_char = current_char
+        self.selection_line = selection_line
+        self.selection_char = selection_char
+        self.cursor_column = cursor_column
+        if mode == CHAR_MODE:
+            self.setCurrentChar(self.current_line, self.current_char, True)
+        else:
+            self.setCurrentLine(self.current_file, self.current_line, True)
+        self.updatePrompt()
+        self.dareas[old_f].queue_draw()
+
+    def setCurrentLine(self, f, i, extend=False):
+        # update selection
+        old_f = self.current_file
+        old_line = self.current_line
+        f = max(min(f, len(self.files) - 1), 0)
+        i = max(min(i, len(self.files[f].lines)), 0)
+        self.current_file = f
+        self.current_line = i
+        if not extend:
+            self.selection_line = i
+        # update size
+        h = self.font_height
+        vadj = self.vadj
+        v = vadj.get_value()
+        ps = vadj.page_size
+        lower = i * h
+        upper = lower + h
+        if lower < v:
+            vadj.set_value(lower)
+        elif upper > v + ps:
+            vadj.set_value(upper - ps)
+        # queue draw
+        self.dareas[old_f].queue_draw()
+        self.dareas[f].queue_draw()
+
+    def updatePrompt(self):
+        if self.mode == CHAR_MODE:
+            j = self.current_char
+            if j > 0:
+                text = self.getLineText(self.current_file, self.current_line)[:j]
+                j = self.stringWidth(self.current_file, text)
+            self.setStatus(_('Column %d') % j)
+        else:
+            self.setStatus('')
+
+    def setCurrentChar(self, i, j, extend=False):
+        f = self.current_file
+        self.cursor_column = -1
+        self.current_line = i
+        self.current_char = j
+        if extend:
+            gtk.clipboard_get(gtk.gdk.SELECTION_PRIMARY).set_text(self.getSelectedText())
+        else:
+            self.selection_line = i
+            self.selection_char = j
+
+        # scroll vertically to current position
+        h = self.font_height
+        lower = i * h
+        upper = lower + h
+        h = self.font_height
+        vadj = self.vadj
+        v = vadj.get_value()
+        ps = vadj.page_size
+        if lower < v:
+            vadj.set_value(lower)
+        elif upper > v + ps:
+            vadj.set_value(upper - ps)
+
+        # scroll horizontally to current position
+        # but try to keep the line numbers visible
+        if j > 0:
+            text = ''.join(self.expand(f, self.getLineText(f, i)[:j]))
+            lower = self.getTextWidth(text)
+        else:
+            lower = 0
+        upper = lower + self.getLineNumberWidth() + self.digit_width
+        lower = pixels(lower)
+        upper = pixels(upper)
+        hadj = self.hadj
+        v = hadj.get_value()
+        ps = hadj.page_size
+        if lower < v:
+            hadj.set_value(lower)
+        elif upper > v + ps:
+            hadj.set_value(upper - ps)
+
+        self.dareas[f].queue_draw()
+        self.updatePrompt()
+
+    def getSelectedText(self):
+        f = self.current_file
+        start = self.selection_line
+        end = self.current_line
+        if self.mode == LINE_MODE:
+            if end < start:
+                start, end = end, start
+            end += 1
+            col0 = 0
+            col1 = 0
+        else:
+            col0 = self.selection_char
+            col1 = self.current_char
+            if end < start or (end == start and col1 < col0):
+                start, col0, end, col1 = end, col1, start, col0
+            if col1 > 0:
+               end += 1
+        end = min(end, len(self.files[f].lines))
+        ss = [ self.getLineText(f, i) for i in range(start, end) ]
+        if col1 > 0:
+            ss[-1] = ss[-1][:col1]
+        if col0 > 0:
+            ss[0] = ss[0][col0:]
+        return ''.join([ s for s in ss if s is not None ])
+
+    def selectAll(self):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            f = self.current_file
+            self.selection_line = 0
+            self.current_line = len(self.files[f].lines)
+            if self.mode == CHAR_MODE:
+                self.selection_char = 0
+                self.current_char = 0
+            self.dareas[f].queue_draw()
+
+    def getPickedCharacter(self, f, text, x, partial):
+        if text is None:
+            return 0
+        n = len(text)
+        w = self.getLineNumberWidth()
+        for i, s in enumerate(self.expand(f, text)):
+            width = self.getTextWidth(s)
+            tmp = w
+            if partial:
+                tmp += width // 2
+            else:
+                tmp += width
+            if x < pixels(tmp):
+                return i
+            w += width
+        return n
+
+    def button_press(self, f, x, y, extend):
+        i = min(y // self.font_height, len(self.files[f].lines))
+        if self.mode == CHAR_MODE and f == self.current_file:
+            text = strip_line_ending(self.files[f].format, self.getLineText(f, i))
+            j = self.getPickedCharacter(f, text, x, True)
+            self.setCurrentChar(i, j, extend)
+        else:
+            self.setLineMode()
+            self.setCurrentLine(f, i, extend and f == self.current_file)
+
+    def darea_button_press_cb(self, widget, event):
+        self.get_toplevel().set_focus(self)
+        x = int(event.x + self.hadj.get_value())
+        y = int(event.y + self.vadj.get_value())
+        f = self.dareas.index(widget)
+        nlines = len(self.files[f].lines)
+        i = min(y // self.font_height, nlines)
+        if event.button == 1:
+            if event.type == gtk.gdk._2BUTTON_PRESS:
+                if self.mode == LINE_MODE:
+                    self.setCurrentLine(f, i)
+                    # silently switch mode so the viewer does not scroll yet.
+                    self.mode = CHAR_MODE
+                    self.button_press(f, x, y, False)
+                elif self.mode == CHAR_MODE and self.current_file == f:
+                    text = strip_line_ending(self.files[f].format, self.getLineText(f, i))
+                    if text is not None:
+                        n = len(text)
+                        j = self.getPickedCharacter(f, text, x, False)
+                        if j < n:
+                            ss = self.expand(f, text[:n])
+                            c = theResources.getCharacterClass(text[j])
+                            k = j
+                            while k > 0 and theResources.getCharacterClass(text[k - 1]) == c:
+                                k -= 1
+                            while j < n and theResources.getCharacterClass(text[j]) == c:
+                                j += 1
+                            self.setCurrentChar(i, k, False)
+                            self.setCurrentChar(i, j, True)
+            elif event.type == gtk.gdk._3BUTTON_PRESS:
+                if self.mode == CHAR_MODE and self.current_file == f:
+                    i2 = min(i + 1, nlines)
+                    self.setCurrentChar(i, 0, False)
+                    self.setCurrentChar(i2, 0, True)
+            else:
+                is_shifted = event.state & gtk.gdk.SHIFT_MASK
+                extend = (is_shifted and f == self.current_file)
+                self.button_press(f, x, y, extend)
+        elif event.button == 2:
+            if self.mode == CHAR_MODE and f == self.current_file:
+                self.button_press(f, x, y, False)
+                gtk.clipboard_get(gtk.gdk.SELECTION_PRIMARY).request_text(self.receiveClipboardText)
+        elif event.button == 3:
+            flag = (self.mode == LINE_MODE and (f == self.current_file + 1 or f == self.current_file - 1))
+            can_align = (flag or self.mode == ALIGN_MODE)
+            can_isolate = (self.mode == LINE_MODE and f == self.current_file)
+            can_merge = (self.mode == LINE_MODE and f != self.current_file)
+            can_swap = (f != self.current_file)
+            can_select = ((self.mode == LINE_MODE or self.mode == CHAR_MODE) and f == self.current_file)
+
+            menu = createMenu(
+                      [ [_('Align to Selection'), self.align_to_selection_cb, [f, i], gtk.STOCK_EXECUTE, None, can_align],
+                      [_('Isolate'), self.isolate_cb, None, None, None, can_isolate ],
+                      [_('Clear Edits'), self.clear_edits_cb, None, gtk.STOCK_CLEAR, None, can_isolate],
+                      [_('Merge'), self.merge_lines_cb, f, None, None, can_merge],
+                      [],
+                      [_('Swap with Selected Pane'), self.swap_panes_cb, f, None, None, can_swap],
+                      [],
+                      [_('Cut'), self.cut_cb, None, gtk.STOCK_CUT, None, can_select],
+                      [_('Copy'), self.copy_cb, None, gtk.STOCK_COPY, None, can_select],
+                      [_('Paste'), self.paste_cb, None, gtk.STOCK_PASTE, None, can_select],
+                      [],
+                      [_('Select All'), self.select_all_cb, None, None, None, can_select] ])
+            menu.popup(None, None, None, event.button, event.time)
+
+    def darea_motion_notify_cb(self, widget, event):
+        if event.state & gtk.gdk.BUTTON1_MASK:
+            f = self.dareas.index(widget)
+            extend = (f == self.current_file)
+            x = int(event.x + self.hadj.get_value())
+            y = int(event.y + self.vadj.get_value())
+            self.button_press(f, x, y, extend)
+
+    def getDiffRanges(self, f, i, idx, flag):
+        result = []
+        s1 = nullToEmpty(self.getLineText(f, i))
+        s2 = nullToEmpty(self.getLineText(f + 1, i))
+
+        if self.prefs.getBool('display_ignore_blanklines') and isBlank(s1) and isBlank(s2):
+            return result
+
+        if self.prefs.getBool('display_ignore_whitespace') or self.prefs.getBool('display_ignore_whitespace_changes'):
+            if idx == 0:
+                s = s1
+            else:
+                s = s2
+            v = 0
+            lookup = []
+            if self.prefs.getBool('display_ignore_whitespace'):
+                for c in s:
+                    if c not in string.whitespace:
+                        lookup.append(v)
+                    v += 1
+            else:
+                pc = True
+                for c in s:
+                    if c in string.whitespace:
+                        if pc:
+                           lookup.append(v)
+                           pc = False
+                    else:
+                        lookup.append(v)
+                        pc = True
+                    v += 1
+            lookup.append(v)
+            s1 = nullToEmpty(self.getCompareString(f, i))
+            s2 = nullToEmpty(self.getCompareString(f + 1, i))
+        else:
+            lookup = None
+
+        ignore_whitespace = self.prefs.getBool('display_ignore_whitespace')
+        start = 0
+        for block in difflib.SequenceMatcher(None, s1, s2).get_matching_blocks():
+            end = block[idx]
+            if start < end:
+                if lookup is not None:
+                    lookup_start = lookup[start]
+                    lookup_end = lookup[end]
+                    for j in range(lookup_start, lookup_end):
+                        if ignore_whitespace and s[j] in string.whitespace:
+                            if lookup_start != j:
+                                result.append((lookup_start, j, flag))
+                            lookup_start = j + 1
+                    if lookup_start != lookup_end:
+                        result.append((lookup_start, lookup_end, flag))
+                else:
+                    result.append((start, end, flag))
+            start = end + block[2]
+        return result
+
+    def getCompareString(self, f, i):
+        line = self.getLine(f, i)
+        if line is not None:
+            s = line.compare_string
+            if s is None:
+                s = line.getText()
+                if s is not None:
+                    if self.prefs.getBool('display_ignore_blanklines') and isBlank(s):
+                        return None
+                    if self.prefs.getBool('display_ignore_whitespace'):
+                        for c in string.whitespace:
+                            s = s.replace(c, '')
+                    elif self.prefs.getBool('display_ignore_whitespace_changes'):
+                        pc = True
+                        r = []
+                        for c in s:
+                            if c in string.whitespace:
+                                if pc:
+                                   r.append(' ')
+                                   pc = False
+                            else:
+                                r.append(c)
+                                pc = True
+                        s = ''.join(r)
+                    if self.prefs.getBool('display_ignore_case'):
+                        s = s.upper()
+                line.compare_string = s
+            return s
+
+    def darea_expose_cb(self, widget, event):
+        f = self.dareas.index(widget)
+        file = self.files[f]
+        syntax = self.syntax
+
+        offset_x, offset_y, width, height = event.area
+        x = offset_x + int(self.hadj.get_value())
+        y = offset_y + int(self.vadj.get_value())
+
+        pixmap = gtk.gdk.Pixmap(widget.window, width, height)
+
+        cr = pixmap.cairo_create()
+        cr.translate(-x, -y)
+
+        maxx = x + width
+        maxy = y + height
+        line_number_width = pixels(self.getLineNumberWidth())
+        h = self.font_height
+
+        diffcolours = [ theResources.getDifferenceColour(f), theResources.getDifferenceColour(f + 1) ]
+        diffcolours.append((diffcolours[0] + diffcolours[1]) * 0.5)
+
+        i = y // h
+        y_start = i * h
+        while y_start < maxy:
+            line = self.getLine(f, i)
+
+            # line numbers
+            if 0 < maxx and line_number_width > x:
+                cr.save()
+                cr.rectangle(0, y_start, line_number_width, h)
+                cr.clip()
+                colour = theResources.getColour('line_number_background')
+                cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                cr.paint()
+
+                ## draw the line number
+                if line is not None and line.line_number > 0:
+                    colour = theResources.getColour('line_number')
+                    cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                    layout = self.create_pango_layout(str(line.line_number))
+                    layout.set_font_description(self.font)
+                    w = pixels(layout.get_size()[0] + self.digit_width)
+                    cr.move_to(line_number_width - w, y_start)
+                    cr.show_layout(layout)
+                cr.restore()
+
+            x_start = line_number_width
+            if x_start < maxx:
+                cr.save()
+                cr.rectangle(x_start, y_start, maxx - x_start, h)
+                cr.clip()
+
+                text = self.getLineText(f, i)
+                ss = None
+
+                if i >= len(file.diff_cache) or file.diff_cache[i] is None:
+                    flags = 0
+                    temp_diff = []
+                    comptext = self.getCompareString(f, i)
+                    if f > 0:
+                        if self.getCompareString(f - 1, i) != comptext:
+                            flags |= 1
+                        if text is not None:
+                            temp_diff = mergeRanges(temp_diff, self.getDiffRanges(f - 1, i, 1, 1))
+                    if f + 1 < len(self.files):
+                        if self.getCompareString(f + 1, i) != comptext:
+                            flags |= 2
+                        if text is not None:
+                            temp_diff = mergeRanges(temp_diff, self.getDiffRanges(f, i, 0, 2))
+
+                    chardiff = []
+                    if text is not None:
+                        if ss is None:
+                            ss = self.expand(f, text)
+
+                        # draw char diffs
+                        old_end = 0
+                        x_temp = 0
+                        for start, end, tflags in temp_diff:
+                            layout = self.create_pango_layout(''.join(ss[old_end:start]))
+                            layout.set_font_description(self.font)
+                            x_temp += layout.get_size()[0]
+                            layout = self.create_pango_layout(''.join(ss[start:end]))
+                            layout.set_font_description(self.font)
+                            w = layout.get_size()[0]
+                            chardiff.append((x_temp, w, diffcolours[tflags - 1]))
+                            old_end = end
+                            x_temp += w
+                    if i >= len(file.diff_cache):
+                        file.diff_cache.extend((i - len(file.diff_cache) + 1) * [ None ])
+                    file.diff_cache[i] = (flags, chardiff)
+                else:
+                    flags, chardiff = file.diff_cache[i]
+
+                colour = theResources.getColour('text_background')
+                if flags != 0:
+                    colour = (diffcolours[flags - 1] * theResources.getFloat('line_difference_alpha')).over(colour)
+                cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                cr.paint()
+
+                if text is not None:
+                    # draw char diffs
+                    alpha = theResources.getFloat('char_difference_alpha')
+                    for start, w, colour in chardiff:
+                        cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                        cr.rectangle(x_start + pixels(start), y_start, pixels(w), h)
+                        cr.fill()
+
+                if line is not None and line.is_modified:
+                    # draw modified
+                    colour = theResources.getColour('modified')
+                    alpha = theResources.getFloat('modified_alpha')
+                    cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                    cr.paint()
+                if self.mode == ALIGN_MODE:
+                    # draw align
+                    if self.align_file == f and self.align_line == i:
+                        colour = theResources.getColour('align')
+                        alpha = theResources.getFloat('align_alpha')
+                        cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                        cr.paint()
+                elif self.mode == LINE_MODE:
+                    # draw line selection
+                    if self.current_file == f:
+                        start = self.selection_line
+                        end = self.current_line
+                        if end < start:
+                            start, end = end, start
+                        if i >= start and i <= end:
+                            colour = theResources.getColour('line_selection')
+                            alpha = theResources.getFloat('line_selection_alpha')
+                            cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                            cr.paint()
+                elif self.mode == CHAR_MODE:
+                    # draw char selection
+                    if self.current_file == f and text is not None:
+                        start = self.selection_line
+                        start_char = self.selection_char
+                        end = self.current_line
+                        end_char = self.current_char
+                        if end < start or (end == start and end_char < start_char):
+                            start, start_char, end, end_char = end, end_char, start, start_char
+                        if start <= i and end >= i:
+                            if start < i:
+                                start_char = 0
+                            if end > i:
+                                end_char = len(text)
+                            if start_char < end_char:
+                                if ss is None:
+                                    ss = self.expand(f, text)
+                                layout = self.create_pango_layout(''.join(ss[:start_char]))
+                                layout.set_font_description(self.font)
+                                x_temp = layout.get_size()[0]
+                                layout = self.create_pango_layout(''.join(ss[start_char:end_char]))
+                                layout.set_font_description(self.font)
+                                w = layout.get_size()[0]
+                                colour = theResources.getColour('char_selection')
+                                alpha = theResources.getFloat('char_selection_alpha')
+                                cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                                cr.rectangle(x_start + pixels(x_temp), y_start, pixels(w), h)
+                                cr.fill()
+
+                if text is None:
+                    # draw hatching
+                    colour = theResources.getColour('hatch')
+                    cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                    cr.set_line_width(1)
+                    h2 = 2 * h
+                    temp = line_number_width
+                    if temp < x:
+                        temp += ((x - temp) // h) * h
+                    h_half = 0.5 * h
+                    phase = [ h_half, h_half, -h_half, -h_half ]
+                    for j in range(4):
+                        x_temp = temp
+                        y_temp = y_start
+                        for k in range(j):
+                            y_temp += phase[k]
+                        cr.move_to(x_temp, y_temp)
+                        for k in range(j, 4):
+                            cr.rel_line_to(h_half, phase[k])
+                            x_temp += h_half
+                        while x_temp < maxx:
+                            cr.rel_line_to(h, h)
+                            cr.rel_line_to(h, -h)
+                            x_temp += h2
+                        cr.stroke()
+                else:
+                    n = len(file.syntax_cache)
+                    if i >= n:
+                        while i >= n:
+                            temp = self.getLineText(f, n)
+                            if syntax is None:
+                                initial_state, end_state = None, None
+                                if temp is None:
+                                    blocks = None
+                                else:
+                                    blocks = [ (0, len(temp), 'text') ]
+                            else:
+                                if n == 0:
+                                    initial_state = syntax.initial_state
+                                else:
+                                    initial_state = file.syntax_cache[-1][1]
+                                if temp is None:
+                                    end_state, blocks = initial_state, None
+                                else:
+                                    end_state, blocks = syntax.parse(initial_state, temp)
+                            file.syntax_cache.append([initial_state, end_state, blocks, None])
+                            n += 1
+                    blocks = file.syntax_cache[i][3]
+                    if blocks is None:
+                        if ss is None:
+                            ss = self.expand(f, text)
+                        x_temp = 0
+                        blocks = []
+                        for start, end, tag in file.syntax_cache[i][2]:
+                            layout = self.create_pango_layout(''.join(ss[start:end]))
+                            layout.set_font_description(self.font)
+                            colour = theResources.getColour(tag)
+                            blocks.append((x_temp, layout, colour))
+                            x_temp += layout.get_size()[0]
+                        file.syntax_cache[i][3] = blocks
+
+                    # draw text
+                    for start, layout, colour in blocks:
+                        cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                        cr.move_to(x_start + pixels(start), y_start)
+                        cr.show_layout(layout)
+
+                if self.current_file == f and self.current_line == i:
+                    # draw the cursor
+                    colour = theResources.getColour('cursor')
+                    cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                    cr.set_line_width(1)
+
+                    if self.mode == CHAR_MODE:
+                        if text is not None:
+                            if ss is None:
+                                ss = self.expand(f, text)
+                            layout = self.create_pango_layout(''.join(ss[:self.current_char]))
+                            layout.set_font_description(self.font)
+                            x_temp = layout.get_size()[0]
+                        else:
+                            x_temp = 0
+                        cr.move_to(x_start + pixels(x_temp) + 0.5, y_start)
+                        cr.rel_line_to(0, h)
+                        cr.stroke()
+                    elif self.mode == LINE_MODE or self.mode == ALIGN_MODE:
+                        cr.move_to(maxx, y_start + 0.5)
+                        cr.line_to(x_start + 0.5, y_start + 0.5)
+                        cr.line_to(x_start + 0.5, y_start + h - 0.5)
+                        cr.line_to(maxx, y_start + h - 0.5)
+                        cr.stroke()
+                cr.restore()
+            i += 1
+            y_start += h
+
+        gc = pixmap.new_gc()
+        widget.window.draw_drawable(gc, pixmap, 0, 0, offset_x, offset_y, width, height)
+
+    def map_vadj_changed(self, vadj):
+        self.map.queue_draw()
+
+    def map_button_press_cb(self, widget, event):
+        vadj = self.vadj
+
+        h = widget.get_allocation().height
+        hmax = max(int(vadj.upper), h)
+
+        y = event.y * hmax // h
+        v = y - int(vadj.page_size / 2)
+        v = max(v, int(vadj.lower))
+        v = min(v, int(vadj.upper - vadj.page_size))
+        vadj.set_value(v)
+
+    def map_scroll_cb(self, widget, event):
+        vadj = self.vadj
+        v = vadj.get_value()
+        delta = 100
+        if event.direction == gtk.gdk.SCROLL_UP:
+            delta = -delta
+        v = max(v + delta, int(vadj.lower))
+        v = min(v, int(vadj.upper - vadj.page_size))
+        vadj.set_value(v)
+
+    def map_expose_cb(self, widget, event):
+        n = len(self.files)
+
+        # compute map
+        if self.map_cache is None:
+            nlines = len(self.files[0].lines)
+            start = n * [ 0 ]
+            flags = n * [ 0 ]
+            self.map_cache = [ [] for f in range(n) ]
+            for i in range(nlines):
+                nextflag = 0
+                for f in range(n):
+                    flag = nextflag
+                    nextflag = 0
+                    s0 = self.getCompareString(f, i)
+                    if f + 1 < n:
+                        if s0 != self.getCompareString(f + 1, i):
+                            flag |= 2
+                            nextflag |= 1
+                    line = self.getLine(f, i)
+                    if line is not None and line.is_modified:
+                        # modified line
+                        flag = 4
+                    elif s0 is None:
+                        # empty line
+                        flag = 0
+                    elif flag == 0:
+                        # regular line
+                        flag = 8
+                    if flags[f] != flag:
+                        if flags[f] != 0:
+                            self.map_cache[f].append([start[f], i, flags[f]])
+                        start[f] = i
+                        flags[f] = flag
+            for f in range(n):
+                if flags[f] != 0:
+                    self.map_cache[f].append([start[f], nlines, flags[f]])
+
+        x, y, width, height = event.area
+        pixmap = gtk.gdk.Pixmap(widget.window, width, height)
+        cr = pixmap.cairo_create()
+        cr.translate(-x, -y)
+
+        # clear
+        colour = theResources.getColour('map_background')
+        cr.set_source_rgb(colour.red, colour.green, colour.blue)
+        cr.paint()
+        bg_colour = theResources.getColour('text_background')
+        modified_colour = theResources.getColour('modified')
+
+        # get scroll position and total size
+        h = widget.get_allocation().height
+        w = widget.get_allocation().width
+        vadj = self.vadj
+        hmax = max(vadj.upper, h)
+
+        # draw diff blocks
+        wn = w / n
+        pad = 1
+        for f in range(n):
+            diffcolours = [ theResources.getDifferenceColour(f), theResources.getDifferenceColour(f + 1) ]
+            diffcolours.append((diffcolours[0] + diffcolours[1]) * 0.5)
+            wx = f * wn
+            # draw in two passes, more important stuff in the second pass
+            # this ensures less important stuff does not obscure more important
+            # data
+            for p in range(2):
+                for start, end, flag in self.map_cache[f]:
+                    if p == 0 and flag == 8:
+                        colour = bg_colour
+                    elif p == 1 and flag & 7:
+                        if flag & 4:
+                            colour = modified_colour
+                        else:
+                            colour = diffcolours[(flag & 3) - 1]
+                    else:
+                        continue
+
+                    # ensure the line is visible in the map
+                    ymin = h * self.font_height * start // hmax
+                    if ymin >= y + height:
+                        break
+                    yh = max(h * self.font_height * end // hmax - ymin, 1)
+                    if ymin + yh <= y:
+                        continue
+
+                    cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                    cr.rectangle(wx + pad, ymin, wn - 2 * pad, yh)
+                    cr.fill()
+
+        # draw cursor
+        vmin = int(vadj.get_value())
+        vmax = vmin + vadj.page_size
+        ymin = h * vmin // hmax
+        if ymin < y + height:
+            yh = h * vmax // hmax - ymin
+            if yh > 1:
+                yh -= 1
+            if ymin + yh > y:
+                colour = theResources.getColour('line_selection')
+                alpha = theResources.getFloat('line_selection_alpha')
+                cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
+                cr.rectangle(0.5, ymin + 0.5, w - 1, yh - 1)
+                cr.fill()
+
+                colour = theResources.getColour('cursor')
+                cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                cr.set_line_width(1)
+                cr.rectangle(0.5, ymin + 0.5, w - 1, yh - 1)
+                cr.stroke()
+
+        gc = pixmap.new_gc()
+        widget.window.draw_drawable(gc, pixmap, 0, 0, x, y, width, height)
+
+    def getMaxCharPosition(self, i):
+        f = self.current_file
+        text = self.getLineText(f, i)
+        if text is None:
+           return 0
+        return len_minus_line_ending(self.files[f].format, text)
+
+    def _line_mode_enter_align_mode(self):
+        self.mode = ALIGN_MODE
+        self.selection_line = self.current_line
+        self.align_file = self.current_file
+        self.align_line = self.current_line
+        self.dareas[self.align_file].queue_draw()
+
+    def _first_line(self):
+        self.setCurrentLine(self.current_file, 0)
+
+    def _extend_first_line(self):
+        self.setCurrentLine(self.current_file, 0, True)
+
+    def _last_line(self):
+        f = self.current_file
+        self.setCurrentLine(f, len(self.files[f].lines))
+
+    def _extend_last_line(self):
+        f = self.current_file
+        self.setCurrentLine(f, len(self.files[f].lines), True)
+
+    def _line_mode_up(self, extend=False):
+        self.setCurrentLine(self.current_file, self.current_line - 1, extend)
+
+    def _line_mode_extend_up(self):
+        self._line_mode_up(True)
+
+    def _line_mode_down(self, extend=False):
+        self.setCurrentLine(self.current_file, self.current_line + 1, extend)
+
+    def _line_mode_extend_down(self):
+        self._line_mode_down(True)
+
+    def _line_mode_left(self, extend=False):
+        self.setCurrentLine(self.current_file - 1, self.current_line, extend)
+
+    def _line_mode_extend_left(self):
+        self._line_mode_left(True)
+
+    def _line_mode_right(self, extend=False):
+        self.setCurrentLine(self.current_file + 1, self.current_line, extend)
+
+    def _line_mode_extend_right(self):
+        self._line_mode_right(True)
+
+    def _line_mode_page_up(self, extend=False):
+        delta = int(self.vadj.page_size // self.font_height)
+        self.setCurrentLine(self.current_file, self.current_line - delta, extend)
+
+    def _line_mode_extend_page_up(self):
+        self._line_mode_page_up(True)
+
+    def _line_mode_page_down(self, extend=False):
+        delta = int(self.vadj.page_size // self.font_height)
+        self.setCurrentLine(self.current_file, self.current_line + delta, extend)
+
+    def _line_mode_extend_page_down(self):
+        self._line_mode_page_down(True)
+
+    def _delete_text(self):
+        self.replaceText('')
+
+    def _align_mode_enter_line_mode(self):
+        self.selection_line = self.current_line
+        self.setLineMode()
+
+    def _align_text(self):
+        f1 = self.align_file
+        line1 = self.align_line
+        line2 = self.current_line
+        self.selection_line = line2
+        self.setLineMode()
+        if self.current_file == f1 + 1:
+            self.align(f1, line1, line2)
+        elif self.current_file + 1 == f1:
+            self.align(self.current_file, line2, line1)
+
+    def key_press_cb(self, widget, event):
+        retval = False
+        mask = event.state & (gtk.gdk.SHIFT_MASK | gtk.gdk.CONTROL_MASK)
+        if event.state & gtk.gdk.LOCK_MASK:
+            mask ^= gtk.gdk.SHIFT_MASK
+        self.openUndoBlock()
+        if self.mode == LINE_MODE:
+            action = theResources.getActionForKey('line_mode', event.keyval, mask)
+            if self._line_mode_actions.has_key(action):
+                self._line_mode_actions[action]()
+                retval = True
+        elif self.mode == CHAR_MODE:
+            f = self.current_file
+            is_shifted = event.state & gtk.gdk.SHIFT_MASK
+            is_ctrl = event.state & gtk.gdk.CONTROL_MASK
+            retval = True
+            action = theResources.getActionForKey('character_mode', event.keyval, mask)
+            if self._character_mode_actions.has_key(action):
+                self._character_mode_actions[action]()
+            elif event.keyval == gtk.keysyms.Tab and event.state & gtk.gdk.CONTROL_MASK:
+                # allow CTRL-Tab for widget navigation
+                retval = False
+            elif event.keyval in [ gtk.keysyms.Up, gtk.keysyms.Down, gtk.keysyms.Page_Up, gtk.keysyms.Page_Down ]:
+                i = self.current_line
+                col = self.cursor_column
+                if col < 0:
+                    s = nullToEmpty(self.getLineText(f, i))[:self.current_char]
+                    col = self.getStringColumnWidth(f, s)
+                if event.keyval in [ gtk.keysyms.Up, gtk.keysyms.Down ]:
+                    delta = 1
+                else:
+                    delta = int(self.vadj.page_size // self.font_height)
+                if event.keyval in [ gtk.keysyms.Up, gtk.keysyms.Page_Up ]:
+                    delta = -delta
+                i += delta
+                j = 0
+                nlines = len(self.files[f].lines)
+                if i < 0:
+                    i = 0
+                elif i > nlines:
+                    i = nlines
+                else:
+                    s = self.getLineText(f, i)
+                    if s is not None:
+                        s = strip_line_ending(self.files[f].format, s)
+                        idx = 0
+                        for c in s:
+                            w = self.characterWidth(idx, c)
+                            if idx + w > col:
+                                break
+                            idx += w
+                            j += 1
+                self.setCurrentChar(i, j, is_shifted)
+                self.cursor_column = col
+            elif event.keyval == gtk.keysyms.Home:
+                if is_ctrl:
+                    i = 0
+                else:
+                    i = self.current_line
+                self.setCurrentChar(i, 0, is_shifted)
+            elif event.keyval == gtk.keysyms.End:
+                if is_ctrl:
+                    i = len(self.files[f].lines)
+                    j = 0
+                else:
+                    i = self.current_line
+                    j = self.getMaxCharPosition(i)
+                self.setCurrentChar(i, j, is_shifted)
+            elif event.keyval == gtk.keysyms.Left:
+                i = self.current_line
+                j = self.current_char
+                if j > 0:
+                    j -= 1
+                elif i > 0:
+                    i -= 1
+                    j = self.getMaxCharPosition(i)
+                self.setCurrentChar(i, j, is_shifted)
+            elif event.keyval == gtk.keysyms.Right:
+                i = self.current_line
+                j = self.current_char
+                if j < self.getMaxCharPosition(i):
+                    j += 1
+                elif i < len(self.files[f].lines):
+                    i += 1
+                    j = 0
+                self.setCurrentChar(i, j, is_shifted)
+            elif event.keyval == gtk.keysyms.BackSpace:
+                s = ''
+                i = self.current_line
+                j = self.current_char
+                if self.selection_line == i and self.selection_char == j:
+                    if j > 0:
+                        text = self.getLineText(f, i)[:j]
+                        for c in text:
+                            if c not in ' \t':
+                                j -= 1
+                                break
+                        else:
+                            w = self.stringWidth(f, text)
+                            width = self.prefs.getInt('editor_soft_tab_width')
+                            w = (w - 1) // width * width
+                            if self.prefs.getBool('editor_expand_tabs'):
+                                s = u' ' * w
+                            else:
+                                width = self.prefs.getInt('display_tab_width')
+                                s = u'\t' * (w // width) + u' ' * (w % width)
+                            j = 0
+                    else:
+                        while i > 0:
+                            i -= 1
+                            text = self.getLineText(f, i)
+                            if text is not None:
+                                j = self.getMaxCharPosition(i)
+                                break
+                    self.current_line = i
+                    self.current_char = j
+                self.replaceText(s)
+            elif event.keyval == gtk.keysyms.Delete:
+                i = self.current_line
+                j = self.current_char
+                if self.selection_line == i and self.selection_char == j:
+                    text = self.getLineText(f, i)
+                    while text is None and i < len(self.files[f].lines):
+                        i += 1
+                        j = 0
+                        text = self.getLineText(f, i)
+                    if text is not None:
+                        if j < self.getMaxCharPosition(i):
+                            j += 1
+                        else:
+                            i += 1
+                            j = 0
+                    self.current_line = i
+                    self.current_char = j
+                self.replaceText('')
+            elif event.keyval == gtk.keysyms.Return:
+                self.replaceText(unicode(os.linesep))
+            elif event.keyval == gtk.keysyms.Tab:
+                start_i, start_j = self.selection_line, self.selection_char
+                end_i, end_j = self.current_line, self.current_char
+                if end_i < start_i or (end_i == start_i and end_j < start_j):
+                    start_i, start_j, end_i, end_j = end_i, end_j, start_i, start_j
+                width = self.prefs.getInt('editor_soft_tab_width')
+                if start_j > 0:
+                    text = self.getLineText(f, start_i)[:start_j]
+                    w = self.stringWidth(f, text)
+                    ws = width - w % width
+                else:
+                    ws = width
+                if self.prefs.getBool('editor_expand_tabs'):
+                    s = u' ' * ws
+                else:
+                    width = self.prefs.getInt('display_tab_width')
+                    if start_j > 0:
+                        while start_j > 0 and text[start_j - 1] in ' \t':
+                            start_j -= 1
+                        self.selection_line = start_i
+                        self.selection_char = start_j
+                        self.current_line = end_i
+                        self.current_char = end_j
+                        ws = w + ws
+                        w = self.stringWidth(f, text[:start_j])
+                    else:
+                        w = 0
+                    ss = []
+                    while True:
+                        w2 = width - w % width
+                        if w + w2 > ws:
+                            break
+                        ss.append(u'\t')
+                        w += w2
+                    ss.append(u' ' * (ws - w))
+                    s = ''.join(ss)
+                self.replaceText(s)
+            elif len(event.string) > 0:
+                self.replaceText(event.string)
+        elif self.mode == ALIGN_MODE:
+            action = theResources.getActionForKey('align_mode', event.keyval, mask)
+            if self._align_mode_actions.has_key(action):
+                self._align_mode_actions[action]()
+                retval = True
+        self.closeUndoBlock()
+        return retval
+
+    def open_file(self, f, reload=False):
+        file = self.files[f]
+        spec = file.spec
+        if file.hasEdits() and not confirmDiscardEdits(self.get_toplevel()):
+           return
+        if not reload:
+            dialog = FileChooserDialog(_('Open File'), self.get_toplevel(), self.prefs, gtk.FILE_CHOOSER_ACTION_OPEN, gtk.STOCK_OPEN)
+            if spec.name is not None:
+                dialog.set_filename(os.path.realpath(spec.name))
+            dialog.set_encoding(spec.encoding)
+            dialog.set_default_response(gtk.RESPONSE_OK)
+            end = (dialog.run() != gtk.RESPONSE_OK)
+            name = dialog.get_filename()
+            rev = None
+            vcs = None
+            revision = dialog.get_revision().strip()
+            if revision != '':
+                rev = revision
+                vcs = theVCSs.findByFilename(name)
+            spec = FileSpec(name, rev, vcs, dialog.get_encoding())
+            dialog.destroy()
+            if end:
+                return
+        self.setLineMode()
+        self.openUndoBlock()
+        self.recordEditMode()
+        self.load(f, spec)
+        self.setCurrentLine(f, min(self.current_line, len(self.files[f].lines)))
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def reload_file_button_cb(self, widget, data):
+        self.open_file(data, True)
+
+    def reload_file_cb(self, widget, data):
+        self.open_file(self.current_file, True)
+
+    def open_file_cb(self, widget, data):
+        self.open_file(self.current_file)
+
+    def open_file_button_cb(self, widget, data):
+        self.open_file(data)
+
+    def save_file(self, f, save_as=False, name=None):
+        file = self.files[f]
+        spec = file.spec
+        if spec.name is None or spec.revision is not None:
+            save_as = True
+        spec = FileSpec(spec.name, None, None, spec.encoding)
+        if name is not None:
+            spec.name = name
+        if save_as:
+            dialog = FileChooserDialog(_('Save File'), self.get_toplevel(), self.prefs, gtk.FILE_CHOOSER_ACTION_SAVE, gtk.STOCK_SAVE)
+            if spec.name is not None:
+                dialog.set_filename(os.path.abspath(spec.name))
+            dialog.set_encoding(spec.encoding)
+            spec.name = None
+            dialog.set_default_response(gtk.RESPONSE_OK)
+            if dialog.run() == gtk.RESPONSE_OK:
+                spec.name = dialog.get_filename()
+                spec.encoding = dialog.get_encoding()
+            dialog.destroy()
+        if spec.name is None:
+            return
+        try:
+            msg = None
+            if save_as:
+                if os.path.exists(spec.name):
+                    msg = _('A file named "%s" already exists.  Do you want to overwrite it?') % (spec.name, )
+            elif file.stat is not None:
+                if file.stat[stat.ST_MTIME] < os.stat(spec.name)[stat.ST_MTIME]:
+                    msg = _('The file "%s" has been modified by another process since reading it.  If you save, all the external changes could be lost.  Save anyways?') % (spec.name, )
+            if msg is not None:
+                dialog = MessageDialog(self.get_toplevel(), gtk.MESSAGE_QUESTION, msg)
+                end = (dialog.run() != gtk.RESPONSE_OK)
+                dialog.destroy()
+                if end:
+                    return
+        except IOError:
+            pass
+        try:
+            ss = [ self.getLineText(f, i) for i in range(len(file.lines)) ]
+            encoded = []
+            lines = []
+            i = 0
+            for s in ss:
+                if s is None:
+                    lines.append(None)
+                else:
+                    i += 1
+                    lines.append(FileDiffViewer.Line(i, s))
+                    encoded.append(codecs.encode(s, spec.encoding))
+
+            # write file
+            fd = open(spec.name, 'wb')
+            for s in encoded:
+                fd.write(s)
+            fd.close()
+            file.stat = os.stat(spec.name)
+
+            # update loaded file
+            self.openUndoBlock()
+            self.replaceLines(f, file.lines, lines, file.max_line_number, len(encoded))
+            self.closeUndoBlock()
+            file.spec = spec
+            self.setLabel(f, spec.name)
+            syntax = theResources.getSyntaxByFilename(spec.name)
+            if syntax is not None:
+                self.setSyntax(syntax)
+        except UnicodeEncodeError:
+            dialog = MessageDialog(self.get_toplevel(), gtk.MESSAGE_ERROR, _('Error ecoding to %s.') % (repr(spec.encoding), ))
+            dialog.run()
+            dialog.destroy()
+        except IOError:
+            dialog = MessageDialog(self.get_toplevel(), gtk.MESSAGE_ERROR, _('Error writing %s.') % (repr(spec.name), ))
+            dialog.run()
+            dialog.destroy()
+
+    def save_file_cb(self, widget, data):
+        self.save_file(self.current_file)
+
+    def save_file_as_cb(self, widget, data):
+        self.save_file(self.current_file, True)
+
+    def save_file_button_cb(self, widget, data):
+        self.save_file(data)
+
+    def save_file_as_button_cb(self, widget, data):
+        self.save_file(data, True)
+
+    def copy_cb(self, widget, data):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            gtk.clipboard_get(gtk.gdk.SELECTION_CLIPBOARD).set_text(self.getSelectedText())
+
+    def cut_cb(self, widget, data):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            self.copy_cb(widget, data)
+            self.openUndoBlock()
+            self.replaceText('')
+            self.closeUndoBlock()
+
+    def receiveClipboardText(self, clipboard, text, data):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            self.openUndoBlock()
+            self.replaceText(self.prefs.convertToUnicode([ text ])[0][0])
+            self.closeUndoBlock()
+
+    def paste_cb(self, widget, data):
+         gtk.clipboard_get(gtk.gdk.SELECTION_CLIPBOARD).request_text(self.receiveClipboardText)
+
+    def select_all_cb(self, widget, data):
+        if self.mode == LINE_MODE or self.mode == CHAR_MODE:
+            self.selectAll()
+
+    def find_cb(self, pattern, match_case, backwards):
+        self.setCharMode()
+        f = self.current_file
+        nlines = len(self.files[f].lines)
+        i, j = self.current_line, self.current_char
+        si, sj = self.selection_line, self.selection_char
+        if backwards:
+            if si < i or (i == si and sj < j):
+                i, j = si, sj
+        elif i < si or (i == si and j < sj):
+            i, j = si, sj
+
+        if not match_case:
+            pattern = pattern.upper()
+        more = True
+        while more:
+            while i < nlines + 1:
+                text = self.getLineText(f, i)
+                if text is not None:
+                    if not match_case:
+                        text = text.upper()
+                    if backwards:
+                        idx = text.rfind(pattern, 0, j)
+                    else:
+                        idx = text.find(pattern, j)
+                    if idx >= 0:
+                        end = idx + len(pattern)
+                        if backwards:
+                            idx, end = end, idx
+                        self.setCurrentChar(i, idx)
+                        self.setCurrentChar(i, end, True)
+                        return
+                if backwards:
+                    if i == 0:
+                        break
+                    i -= 1
+                    text = self.getLineText(f, i)
+                    if text is None:
+                        j = 0
+                    else:
+                        j = len(text)
+                else:
+                    i += 1
+                    j = 0
+
+            j = 0
+            if backwards:
+                msg = _('Phrase not found.  Continue from the end of the file?')
+                i = nlines
+            else:
+                msg = _('Phrase not found.  Continue from the start of the file?')
+                i = 0
+            dialog = MessageDialog(self.get_toplevel(), gtk.MESSAGE_QUESTION, msg)
+            dialog.set_default_response(gtk.RESPONSE_OK)
+            more = (dialog.run() == gtk.RESPONSE_OK)
+            dialog.destroy()
+
+    def go_to_line_cb(self, widget, data):
+        parent = self.get_toplevel()
+        dialog = GoToLineDialog(parent)
+        okay = (dialog.run() == gtk.RESPONSE_ACCEPT)
+        i = dialog.entry.get_text().strip()
+        dialog.destroy()
+        if okay:
+            try:
+                f, idx, i = self.current_file, 0, int(i)
+                if i > 0:
+                    lines = self.files[f].lines
+                    while idx < len(lines):
+                        line = lines[idx]
+                        if line is not None and line.line_number == i:
+                            break
+                        idx += 1
+                self.setLineMode()
+                self.centre_view_about_y((idx + 0.5) * self.font_height)
+                self.setCurrentLine(f, idx)
+                return
+            except ValueError:
+                m = MessageDialog(parent, gtk.MESSAGE_ERROR, _('Error parsing line number.'))
+                m.run()
+                m.destroy()
+
+    def convert_to_dos_cb(self, widget, data):
+        self.setLineMode()
+        self.openUndoBlock()
+        self.recordEditMode()
+        f = self.current_file
+        for i in range(len(self.files[f].lines)):
+            text = self.getLineText(f, i)
+            s = convert_to_dos(text)
+            if s != text:
+                self.updateLineText(f, i, True, s)
+        self.setFormat(f, DOS_FORMAT)
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def convert_to_unix_cb(self, widget, data):
+        self.setLineMode()
+        self.openUndoBlock()
+        self.recordEditMode()
+        f = self.current_file
+        for i in range(len(self.files[f].lines)):
+            text = self.getLineText(f, i)
+            s = convert_to_unix(text)
+            if s != text:
+                self.updateLineText(f, i, True, s)
+        self.setFormat(f, UNIX_FORMAT)
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    class SwapPanesUndo:
+        def __init__(self, f_dst, f_src):
+            self.data = (f_dst, f_src)
+
+        def undo(self, viewer):
+            f_dst, f_src = self.data
+            viewer.swapPanes(f_src, f_dst)
+
+        def redo(self, viewer):
+            f_dst, f_src = self.data
+            viewer.swapPanes(f_dst, f_src)
+
+    def swapPanes(self, f_dst, f_src):
+        if self.undoblock is not None:
+            self.addUndo(FileDiffViewer.SwapPanesUndo(f_dst, f_src))
+        self.current_file = f_dst
+        f0 = self.files[f_dst]
+        f1 = self.files[f_src]
+        self.files[f_dst], self.files[f_src] = f1, f0
+        self.setLabel(f_dst, f1.label)
+        self.setLabel(f_src, f0.label)
+        nfiles = len(self.files)
+        for f_idx in f_dst, f_src:
+            for f in range(f_idx - 1, f_idx + 2):
+                if f >= 0 and f < nfiles:
+                    del self.files[f].diff_cache[:]
+                    self.dareas[f].queue_draw()
+        self.map_cache = None
+        self.map.queue_draw()
+
+    def swap_panes(self, f_dst, f_src):
+        if f_dst >= 0 and f_dst < len(self.files):
+            if self.mode == ALIGN_MODE:
+                self.setLineMode()
+            self.openUndoBlock()
+            self.recordEditMode()
+            self.swapPanes(f_dst, f_src)
+            self.recordEditMode()
+            self.closeUndoBlock()
+
+    def swap_panes_cb(self, widget, data):
+        self.swap_panes(data, self.current_file)
+
+    def shift_pane_left_cb(self, widget, data):
+        f = self.current_file
+        self.swap_panes(f - 1, f)
+
+    def shift_pane_right_cb(self, widget, data):
+        f = self.current_file
+        self.swap_panes(f + 1, f)
+
+    def prefsUpdated(self):
+        self.setFont(pango.FontDescription(self.prefs.getString('display_font')))
+        for file in self.files:
+            del file.diff_cache[:]
+        for darea in self.dareas:
+            darea.queue_draw()
+        self.map_cache = None
+        self.map.queue_draw()
+        self.updatePrompt()
+
+    def clear_edits_cb(self, widget, data):
+        self.setLineMode()
+        self.openUndoBlock()
+        self.recordEditMode()
+        f = self.current_file
+        start = self.selection_line
+        end = self.current_line
+        if end < start:
+            start, end = end, start
+        end = min(end + 1, len(self.files[0].lines))
+        for i in range(start, end):
+            line = self.getLine(f, i)
+            if line is not None and line.is_modified:
+                self.updateText(f, i, None, False)
+                if line.text is None:
+                    self.instanceLine(f, i, True)
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def merge_lines(self, f_dst, f_src):
+        self.setLineMode()
+        file = self.files[f_dst]
+        start = self.selection_line
+        end = self.current_line
+        if end < start:
+            start, end = end, start
+        end = min(end + 1, len(file.lines))
+        ss = [ self.getLineText(f_src, i) for i in range(start, end) ]
+        if file.format == 0:
+            self.setFormat(f_dst, getFormat(ss))
+        for i, s in enumerate(ss):
+            self.updateText(f_dst, start + i, convert_to_format(s, file.format))
+
+    def merge_lines_cb(self, widget, data):
+        self.openUndoBlock()
+        self.recordEditMode()
+        self.merge_lines(data, self.current_file)
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def _merge_from_left(self):
+        f = self.current_file
+        if f > 0:
+            self.merge_lines(f, f - 1)
+
+    def merge_from_left_cb(self, widget, data):
+        self.openUndoBlock()
+        self.recordEditMode()
+        self._merge_from_left()
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def _merge_from_right(self):
+        f = self.current_file
+        if f + 1 < len(self.files):
+            self.merge_lines(f, f + 1)
+
+    def merge_from_right_cb(self, widget, data):
+        self.openUndoBlock()
+        self.recordEditMode()
+        self._merge_from_right()
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def _isolate(self):
+        self.setLineMode()
+        f = self.current_file
+        start = self.selection_line
+        end = self.current_line
+        if end < start:
+            start, end = end, start
+        end += 1
+        nlines = len(self.files[f].lines)
+        end = min(end, nlines)
+        n = end - start
+        if n > 0:
+            lines = [ file.lines[start:end] for file in self.files ]
+            space = [ n * [ None ] for file in self.files ]
+            lines[f], space[f] = space[f], lines[f]
+
+            pre, post = cutBlocks(end, self.blocks)
+            pre, middle = cutBlocks(start, pre)
+
+            # remove nulls
+            b = [ n ]
+            removeNullLines(b, space)
+            end = start + sum(b)
+            if end > start:
+                end -= 1
+            self.selection_line = start
+            self.setCurrentLine(f, end, True)
+            removeNullLines(middle, lines)
+
+            for s, line in zip(space, lines):
+                s.extend(line)
+
+            # update lines and blocks
+            self.updateAlignment(start, n, space)
+            pre.extend(b)
+            pre.extend(middle)
+            pre.extend(post)
+            self.updateBlocks(pre)
+
+    def isolate_cb(self, widget, data):
+        self.openUndoBlock()
+        self.recordEditMode()
+        self._isolate()
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def align_to_selection_cb(self, widget, data):
+        self.setLineMode()
+        self.openUndoBlock()
+        self.recordEditMode()
+        f, line1 = data
+        f2 = self.current_file
+        line2 = self.current_line
+        if f2 < f:
+            f = f2
+            line1, line2 = line2, line1
+        self.align(f, line1, line2)
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def hasEditsOrDifference(self, f, i):
+        line = self.getLine(f, i)
+        if line is not None and line.is_modified:
+            return True
+        text = self.getCompareString(f, i)
+        return (f > 0 and self.getCompareString(f - 1, i) != text) or (f + 1 < len(self.files) and text != self.getCompareString(f + 1, i))
+
+    def hasDifferences(self):
+        n = len(self.files)
+        nlines = len(self.files[0].lines)
+        for i in range(nlines):
+            text = self.getCompareString(0, i)
+            for f in range(1, n):
+                if self.getCompareString(f, i) != text:
+                    return True
+        return False
+
+    def centre_view_about_y(self, y):
+        vadj = self.vadj
+        y = min(max(0, y - vadj.page_size / 2), vadj.upper - vadj.page_size)
+        vadj.set_value(y)
+
+    def goto_difference(self, i, delta):
+        f = self.current_file
+        nlines = len(self.files[f].lines)
+        # back up to beginning of difference
+        while self.hasEditsOrDifference(f, i):
+            i2 = i - delta
+            if i2 < 0 or i2 > nlines:
+                break
+            i = i2
+        # step over non-difference
+        while i >= 0 and i <= nlines and not self.hasEditsOrDifference(f, i):
+            i += delta
+        # find extent of difference
+        if i >= 0 and i <= nlines:
+            start = i
+            while i >= 0 and i <= nlines and self.hasEditsOrDifference(f, i):
+                i += delta
+            i -= delta
+            if i < start:
+                start, i = i, start
+            # centre the view on the selection
+            self.centre_view_about_y((start + i) * self.font_height / 2)
+            self.selection_line = i
+            self.setCurrentLine(f, start, True)
+
+    def realign_all_cb(self, widget, data):
+        self.setLineMode()
+        f = self.current_file
+        self.openUndoBlock()
+        self.recordEditMode()
+        lines = []
+        blocks = []
+        for file in self.files:
+            newlines = [ [ line for line in file.lines if line is not None ] ]
+            newblocks = []
+            nlines = len(newlines[0])
+            if nlines > 0:
+                newblocks.append(nlines)
+            if len(lines) > 0:
+                self.alignBlocks(blocks, lines, newblocks, newlines)
+                blocks = mergeBlocks(blocks, newblocks)
+            else:
+                blocks = newblocks
+            lines.extend(newlines)
+        self.updateAlignment(0, len(self.files[f].lines), lines)
+        self.updateBlocks(blocks)
+        self.setCurrentLine(f, min(self.current_line, len(self.files[f].lines)))
+        self.recordEditMode()
+        self.closeUndoBlock()
+
+    def _first_difference(self):
+        self.setLineMode()
+        self.goto_difference(0, 1)
+
+    def first_difference_cb(self, widget, data):
+        self._first_difference()
+
+    def _previous_difference(self):
+        self.setLineMode()
+        i = min(self.current_line, self.selection_line) - 1
+        self.goto_difference(i, -1)
+
+    def previous_difference_cb(self, widget, data):
+        self._previous_difference()
+
+    def _next_difference(self):
+        self.setLineMode()
+        i = max(self.current_line, self.selection_line) + 1
+        self.goto_difference(i, 1)
+
+    def next_difference_cb(self, widget, data):
+        self._next_difference()
+
+    def _last_difference(self):
+        self.setLineMode()
+        f = self.current_file
+        i = len(self.files[f].lines)
+        self.goto_difference(i, -1)
+
+    def last_difference_cb(self, widget, data):
+        self._last_difference()
+
+    def _realise_cb(self, widget):
+        self._first_difference()
+
+# dialogue used to search for text
+class SearchDialog(gtk.Dialog):
+    def __init__(self, parent, pattern=None, history=None):
+        gtk.Dialog.__init__(self, _('Find...'), parent, gtk.DIALOG_MODAL | gtk.DIALOG_DESTROY_WITH_PARENT, (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
+
+        vbox = gtk.VBox()
+        vbox.set_border_width(10)
+
+        hbox = gtk.HBox()
+        label = gtk.Label(_('Search For: '))
+        hbox.pack_start(label, False, False, 0)
+        label.show()
+        combo = gtk.combo_box_entry_new_text()
+        self.entry = combo.child
+        self.entry.connect('activate', self.entry_cb)
+
+        if pattern is not None:
+            self.entry.set_text(pattern)
+
+        if history is not None:
+            completion = gtk.EntryCompletion()
+            liststore = gtk.ListStore(gobject.TYPE_STRING)
+            completion.set_model(liststore)
+            completion.set_text_column(0)
+            for h in history:
+                liststore.append([h])
+                combo.append_text(h)
+            self.entry.set_completion(completion)
+
+        hbox.pack_start(combo, True, True, 0)
+        combo.show()
+        vbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+
+        button = gtk.CheckButton(_('Match Case'))
+        self.match_case_button = button
+        vbox.pack_start(button, False, False, 0)
+        button.show()
+
+        button = gtk.CheckButton(_('Search Backwards'))
+        self.backwards_button = button
+        vbox.pack_start(button, False, False, 0)
+        button.show()
+
+        self.vbox.pack_start(vbox, False, False, 0)
+        vbox.show()
+
+    def entry_cb(self, widget):
+        self.response(gtk.RESPONSE_ACCEPT)
+
+# the main application class containing a set of file viewers
+# this class displays tab for switching between viewers and dispatches menu
+# commands to the current viewer
+class Diffuse(gtk.Window):
+    def __init__(self):
+        gtk.Window.__init__(self, gtk.WINDOW_TOPLEVEL)
+
+        self.prefs = Preferences()
+        self.viewer_count = 0
+        self.search_pattern = None
+        self.search_history = []
+        self.search_match_case = False
+        self.search_backwards = False
+
+        self.connect('delete-event', self.delete_cb)
+        self.set_title(APP_NAME)
+        accel_group = gtk.AccelGroup()
+
+        # Create a VBox for our contents
+        vbox = gtk.VBox()
+
+        menuspecs = []
+        menuspecs.append([ _('_File'), [
+                     [_('_Open File...'), self.open_file_cb, None, gtk.STOCK_OPEN, 'open_file'],
+                     [_('_Reload File'), self.reload_file_cb, None, gtk.STOCK_REFRESH, 'reload_file'],
+                     [_('_Save File'), self.save_file_cb, None, gtk.STOCK_SAVE, 'save_file'],
+                     [_('Save File _As...'), self.save_file_as_cb, None, gtk.STOCK_SAVE_AS, 'save_file_as'],
+                     [],
+                     [_('New _2-Way File Merge'), self.new_2way_file_merge_cb, None, None, 'new_2_way_file_merge'],
+                     [_('New _3-Way File Merge'), self.new_3way_file_merge_cb, None, None, 'new_3_way_file_merge'],
+                     [],
+                     [_('_Quit'), self.quit_cb, None, gtk.STOCK_QUIT, 'quit'] ] ])
+
+        menuspecs.append([ _('_Edit'), [
+                     [_('_Undo'), self.undo_cb, None, gtk.STOCK_UNDO, 'undo'],
+                     [_('_Redo'), self.redo_cb, None, gtk.STOCK_REDO, 'redo'],
+                     [],
+                     [_('Cu_t'), self.cut_cb, None, gtk.STOCK_CUT, 'cut'],
+                     [_('_Copy'), self.copy_cb, None, gtk.STOCK_COPY, 'copy'],
+                     [_('_Paste'), self.paste_cb, None, gtk.STOCK_PASTE, 'paste'],
+                     [],
+                     [_('Select _All'), self.select_all_cb, None, None, 'select_all'],
+                     [],
+                     [_('_Find...'), self.find_cb, None, gtk.STOCK_FIND, 'find'],
+                     [_('Find _Next'), self.find_next_cb, None, None, 'find_next'],
+                     [_('Find Pre_vious'), self.find_previous_cb, None, None, 'find_previous'],
+                     [_('Go To _Line...'), self.go_to_line_cb, None, None, 'go_to_line'],
+                     [],
+                     [_('Convert to _DOS Format'), self.convert_to_dos_cb, None, None, 'convert_to_dos'],
+                     [_('Convert to Uni_x Format'), self.convert_to_unix_cb, None, None, 'convert_to_unix'] ] ])
+
+        submenudef = [ [_('None'), self.syntax_cb, None, None, 'no_syntax_highlighting'] ]
+        names = theResources.getSyntaxNames()
+        if len(names) > 0:
+            submenudef.append([])
+            names.sort(key=str.lower)
+            for name in names:
+                submenudef.append([name, self.syntax_cb, name, None, 'syntax_highlighting_' + name])
+
+        menuspecs.append([ _('_View'), [
+                     [_('_Syntax Highlighting'), None, None, None, None, True, submenudef],
+                     [],
+                     [_('Pre_vious Tab'), self.previous_tab_cb, None, None, 'previous_tab'],
+                     [_('_Next Tab'), self.next_tab_cb, None, None, 'next_tab'],
+                     [_('_Close Tab'), self.close_tab_cb, None, None, 'close_tab'],
+                     [],
+                     [_('Shift Pane _Left'), self.shift_pane_left_cb, None, None, 'shift_pane_left'],
+                     [_('Shift Pane _Right'), self.shift_pane_right_cb, None, None, 'shift_pane_right'],
+                     [],
+                     [_('_Preferences...'), self.preferences_cb, None, gtk.STOCK_PREFERENCES, 'preferences'] ] ])
+
+        menuspecs.append([ _('_Merge'), [
+                     [_('Re_align All'), self.realign_all_cb, None, gtk.STOCK_EXECUTE, 'realign_all'],
+                     [],
+                     [_('_First Difference'), self.first_difference_cb, None, gtk.STOCK_GOTO_TOP, 'first_difference'],
+                     [_('_Previous Difference'), self.previous_difference_cb, None, gtk.STOCK_GO_UP, 'previous_difference'],
+                     [_('_Next Difference'), self.next_difference_cb, None, gtk.STOCK_GO_DOWN, 'next_difference'],
+                     [_('_Last Difference'), self.last_difference_cb, None, gtk.STOCK_GOTO_BOTTOM, 'last_difference'],
+                     [],
+                     [_('_Clear Edits'), self.clear_edits_cb, None, gtk.STOCK_CLEAR, 'clear_edits'],
+                     [_('Merge From Le_ft'), self.merge_from_left_cb, None, gtk.STOCK_GO_FORWARD, 'merge_from_left'],
+                     [_('Merge From Ri_ght'), self.merge_from_right_cb, None, gtk.STOCK_GO_BACK, 'merge_from_right'],
+                     [],
+                     [_('_Isolate'), self.isolate_cb, None, None, 'isolate'] ] ])
+
+        menuspecs.append([ _('_Help'), [
+                     [_('_Help Contents...'), self.help_contents_cb, None, gtk.STOCK_HELP, 'help_contents'],
+                     [],
+                     [_('_About %s...') % (APP_NAME, ), self.about_cb, None, gtk.STOCK_ABOUT, 'about'] ] ])
+
+        menu_bar = createMenuBar(menuspecs, accel_group)
+        vbox.pack_start(menu_bar, False, False, 0)
+        menu_bar.show()
+
+        # create button bar
+        hbox = gtk.HBox()
+        appendButtons(hbox, gtk.ICON_SIZE_LARGE_TOOLBAR, [
+           [ gtk.STOCK_EXECUTE, self.realign_all_cb, None, _('Realign All') ],
+           [],
+           [ gtk.STOCK_GOTO_TOP, self.first_difference_cb, None, _('First Difference') ],
+           [ gtk.STOCK_GO_UP, self.previous_difference_cb, None, _('Previous Difference') ],
+           [ gtk.STOCK_GO_DOWN, self.next_difference_cb, None, _('Next Difference') ],
+           [ gtk.STOCK_GOTO_BOTTOM, self.last_difference_cb, None, _('Last Difference') ],
+           [],
+           [ gtk.STOCK_CLEAR, self.clear_edits_cb, None, _('Clear Edits') ],
+           [ gtk.STOCK_GO_FORWARD, self.merge_from_left_cb, None, _('Merge From Left') ],
+           [ gtk.STOCK_GO_BACK, self.merge_from_right_cb, None, _('Merge From Right') ],
+           [],
+           [ gtk.STOCK_CUT, self.cut_cb, None, _('Cut') ],
+           [ gtk.STOCK_COPY, self.copy_cb, None, _('Copy') ],
+           [ gtk.STOCK_PASTE, self.paste_cb, None, _('Paste') ] ])
+        vbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+
+        self.notebook = notebook = gtk.Notebook()
+        notebook.set_scrollable(True)
+        vbox.pack_start(notebook, True, True, 0)
+        notebook.show()
+
+        self.add_accel_group(accel_group)
+        self.add(vbox)
+        vbox.show()
+
+    def remove_tab_cb(self, widget, data):
+        if self.notebook.get_n_pages() > 1:
+            if not data.hasEdits() or confirmDiscardEdits(self.get_toplevel()):
+                self.notebook.remove(data)
+                self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
+
+    def newFileDiffViewer(self, name, n):
+        viewer = FileDiffViewer(n, self.prefs)
+        hbox = gtk.HBox()
+        image = gtk.Image()
+        image.set_from_stock(gtk.STOCK_FILE, gtk.ICON_SIZE_MENU)
+        hbox.pack_start(image, False, False, 5)
+        image.show()
+        self.viewer_count += 1
+        if name is None:
+            name = _('File Merge %d') % (self.viewer_count, )
+        label = gtk.Label(name)
+        hbox.pack_start(label, False, False, 0)
+        label.show()
+        button = gtk.Button()
+        button.connect('clicked', self.remove_tab_cb, viewer)
+        button.set_relief(gtk.RELIEF_NONE)
+        image = gtk.Image()
+        image.set_from_stock(gtk.STOCK_CLOSE, gtk.ICON_SIZE_MENU)
+        button.add(image)
+        image.show()
+        hbox.pack_start(button, False, False, 0)
+        button.show()
+        self.notebook.append_page(viewer, hbox)
+        self.notebook.set_tab_reorderable(viewer, True)
+        hbox.show()
+        viewer.show()
+        self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
+        return viewer
+
+    def newLoadedFileDiffViewer(self, tabname, specs):
+        # determine the number of files to show
+        if len(specs) == 1:
+            name = specs[0].name
+            encoding = specs[0].encoding
+            vcs = theVCSs.findByFilename(name)
+            if vcs is not None:
+                specs = []
+                for name, rev in vcs.getSingleFileSpecs(self.prefs, name):
+                    specs.append(FileSpec(name, rev, vcs, encoding))
+            else:
+                specs.insert(0, FileSpec())
+        else:
+            for spec in specs:
+                if spec.revision is not None:
+                    spec.vcs = theVCSs.findByFilename(spec.name)
+
+        # open a new viewer
+        viewer = self.newFileDiffViewer(tabname, len(specs))
+
+        # load the files
+        for i, spec in enumerate(specs):
+            viewer.load(i, spec)
+
+    def confirmQuit(self):
+        for i in range(self.notebook.get_n_pages()):
+            viewer = self.notebook.get_nth_page(i)
+            if viewer.hasEdits():
+                return confirmDiscardEdits(self)
+        return True
+
+    def delete_cb(self, widget, event):
+        if self.confirmQuit():
+            gtk.main_quit()
+            return False
+        return True
+
+    def getCurrentViewer(self):
+        return self.notebook.get_nth_page(self.notebook.get_current_page())
+
+    def open_file_cb(self, widget, data):
+        self.getCurrentViewer().open_file_cb(widget, data)
+
+    def reload_file_cb(self, widget, data):
+        self.getCurrentViewer().reload_file_cb(widget, data)
+
+    def save_file_cb(self, widget, data):
+        self.getCurrentViewer().save_file_cb(widget, data)
+
+    def save_file_as_cb(self, widget, data):
+        self.getCurrentViewer().save_file_as_cb(widget, data)
+
+    def new_2way_file_merge_cb(self, widget, data):
+        viewer = self.newFileDiffViewer(None, 2)
+        self.notebook.set_current_page(self.notebook.get_n_pages() - 1)
+        viewer.grab_focus()
+
+    def new_3way_file_merge_cb(self, widget, data):
+        viewer = self.newFileDiffViewer(None, 3)
+        self.notebook.set_current_page(self.notebook.get_n_pages() - 1)
+        viewer.grab_focus()
+
+    def quit_cb(self, widget, data):
+        if self.confirmQuit():
+            gtk.main_quit()
+
+    def undo_cb(self, widget, data):
+        self.getCurrentViewer().undo()
+
+    def redo_cb(self, widget, data):
+        self.getCurrentViewer().redo()
+
+    def cut_cb(self, widget, data):
+        self.getCurrentViewer().cut_cb(widget, data)
+
+    def copy_cb(self, widget, data):
+        self.getCurrentViewer().copy_cb(widget, data)
+
+    def paste_cb(self, widget, data):
+        self.getCurrentViewer().paste_cb(widget, data)
+
+    def select_all_cb(self, widget, data):
+        self.getCurrentViewer().select_all_cb(widget, data)
+
+    def find(self, force, reverse):
+        if force or self.search_pattern is None:
+            history = self.search_history
+            dialog = SearchDialog(self.get_toplevel(), self.search_pattern, history)
+            dialog.match_case_button.set_active(self.search_match_case)
+            dialog.backwards_button.set_active(self.search_backwards)
+            keep = (dialog.run() == gtk.RESPONSE_ACCEPT)
+            pattern = dialog.entry.get_text()
+            match_case = dialog.match_case_button.get_active()
+            backwards = dialog.backwards_button.get_active()
+            dialog.destroy()
+            if not keep or pattern == '':
+                return
+            self.search_pattern = pattern
+            if pattern in history:
+                del history[history.index(pattern)]
+            history.insert(0, pattern)
+            self.search_match_case = match_case
+            self.search_backwards = backwards
+        self.getCurrentViewer().find_cb(self.search_pattern, self.search_match_case, reverse ^ self.search_backwards)
+
+    def find_cb(self, widget, data):
+        self.find(True, False)
+
+    def find_next_cb(self, widget, data):
+        self.find(False, False)
+
+    def find_previous_cb(self, widget, data):
+        self.find(False, True)
+
+    def go_to_line_cb(self, widget, data):
+        self.getCurrentViewer().go_to_line_cb(widget, data)
+
+    def convert_to_dos_cb(self, widget, data):
+        self.getCurrentViewer().convert_to_dos_cb(widget, data)
+
+    def convert_to_unix_cb(self, widget, data):
+        self.getCurrentViewer().convert_to_unix_cb(widget, data)
+
+    def syntax_cb(self, widget, data):
+        self.getCurrentViewer().setSyntax(theResources.getSyntax(data))
+
+    def previous_tab_cb(self, widget, data):
+        i = self.notebook.get_current_page() - 1
+        if i >= 0:
+            self.notebook.set_current_page(i)
+
+    def next_tab_cb(self, widget, data):
+        i = self.notebook.get_current_page() + 1
+        n = self.notebook.get_n_pages()
+        if i < n:
+            self.notebook.set_current_page(i)
+
+    def close_tab_cb(self, widget, data):
+        self.remove_tab_cb(widget, self.notebook.get_nth_page(self.notebook.get_current_page()))
+
+    def shift_pane_left_cb(self, widget, data):
+        self.getCurrentViewer().shift_pane_left_cb(widget, data)
+
+    def shift_pane_right_cb(self, widget, data):
+        self.getCurrentViewer().shift_pane_right_cb(widget, data)
+
+    def preferences_cb(self, widget, data):
+        if self.prefs.runDialog(self.get_toplevel()):
+            self.preferences_updated()
+
+    def preferences_updated(self):
+        for i in range(self.notebook.get_n_pages()):
+            self.notebook.get_nth_page(i).prefsUpdated()
+
+    def realign_all_cb(self, widget, data):
+        self.getCurrentViewer().realign_all_cb(widget, data)
+
+    def first_difference_cb(self, widget, data):
+        self.getCurrentViewer().first_difference_cb(widget, data)
+
+    def previous_difference_cb(self, widget, data):
+        self.getCurrentViewer().previous_difference_cb(widget, data)
+
+    def next_difference_cb(self, widget, data):
+        self.getCurrentViewer().next_difference_cb(widget, data)
+
+    def last_difference_cb(self, widget, data):
+        self.getCurrentViewer().last_difference_cb(widget, data)
+
+    def clear_edits_cb(self, widget, data):
+        self.getCurrentViewer().clear_edits_cb(widget, data)
+
+    def merge_from_left_cb(self, widget, data):
+        self.getCurrentViewer().merge_from_left_cb(widget, data)
+
+    def merge_from_right_cb(self, widget, data):
+        self.getCurrentViewer().merge_from_right_cb(widget, data)
+
+    def isolate_cb(self, widget, data):
+        self.getCurrentViewer().isolate_cb(widget, data)
+
+    def help_contents_cb(self, widget, data):
+        browser = theResources.getString('help_browser')
+        if browser == '':
+            webbrowser.open(theResources.getString('help_url'))
+        else:
+            args = [ browser, theResources.getString('help_file') ]
+            # spawnvp is not available on some systems, use spawnv instead
+            os.spawnv(os.P_NOWAIT, args[0], args)
+
+    def about_cb(self, widget, data):
+        dialog = AboutDialog()
+        dialog.run()
+        dialog.destroy()
+
+# variables to record the window size and maximised state so we can save the
+# data when quiting the application (we use globals as the main widget may be
+# destroyed before we are attempt to save the data)
+window_x = 0
+window_y = 0
+window_width = 1024
+window_height = 768
+window_maximized = False
+
+def configure_cb(widget, event):
+    global window_x, window_y, window_width, window_height
+    # read the state directly instead of using window_maximized as the order
+    # of configure/window_state events is undefined
+    if (widget.window.get_state() & gtk.gdk.WINDOW_STATE_MAXIMIZED) == 0:
+        window_x, window_y = widget.window.get_root_origin()
+        window_width, window_height = event.width, event.height
+
+def window_state_cb(window, event):
+    global window_maximized
+    window_maximized = ((event.new_window_state & gtk.gdk.WINDOW_STATE_MAXIMIZED) != 0)
+
+# process the command line arguments
+if __name__ == '__main__':
+    path = os.path.expanduser('~/.diffuse')
+    if not os.path.exists(path):
+        try:
+            os.mkdir(path)
+        except IOError:
+            pass
+
+    # load resource files
+    i = 1
+    if argc == 2 and args[1] == '--no-rcfile':
+        i += 1
+    elif argc == 3 and args[1] == '--rcfile':
+        i += 1
+        theResources.parse(args[i])
+        i += 1
+    else:
+        rc_file = os.path.expanduser('~/.diffuse/diffuserc')
+        if not os.path.exists(rc_file):
+            try:
+                f = open(rc_file, 'w')
+                f.write("""# personal initialisation file for %s
+import %s
+""" % (APP_NAME, RESOURCES))
+                f.close()
+            except:
+                pass
+        if os.path.isfile(rc_file):
+            theResources.parse(rc_file)
+
+    icon = theResources.getString('icon')
+    if os.path.isfile(icon):
+        gtk.window_set_default_icon(gtk.gdk.pixbuf_new_from_file(icon))
+    diff = Diffuse()
+    # load state
+    configpath = os.path.join(path, 'config')
+    if os.path.isfile(configpath):
+        try:
+            f = open(configpath, 'r')
+            ss = f.readlines()
+            f.close()
+            for j, s in enumerate(ss):
+                a = shlex.split(s, True)
+                if len(a) > 0:
+                    try:
+                        if len(a) == 3 and a[0] == 'position':
+                            window_x, window_y = int(a[1]), int(a[2])
+                        elif len(a) == 3 and a[0] == 'size':
+                            window_width, window_height = int(a[1]), int(a[2])
+                        elif len(a) == 2 and a[0] == 'maximized':
+                            window_maximized = (a[1] == '1')
+                        else:
+                            raise ValueError()
+                    except ValueError:
+                        print _('Error parsing line %(line)d of "%(file)s".') % { 'line': j + 1, 'file': configpath }
+        except IOError:
+            print _('Error reading %s.') % (repr(configpath), )
+    diff.connect('configure_event', configure_cb)
+    diff.connect('window_state_event', window_state_cb)
+    # process remaining command line arguments
+    tab_label = None
+    encoding = None
+    specs = []
+    revs = []
+    isdirviewer = True
+    separate = False
+    close_on_same = False
+    while i < argc:
+        arg = args[i]
+        if len(arg) > 0 and arg[0] == '-':
+            if i + 1 < argc and arg in [ '-r', '--revision' ]:
+                # specified revision
+                i += 1
+                revs.append(args[i])
+            elif i + 1 < argc and arg in [ '-c', '--commit' ]:
+                # specified revision
+                i += 1
+                rev = args[i]
+                prev = ''
+                try:
+                    prev = str(int(rev) - 1)
+                except:
+                    print _('Error parsing revision %s.') % (repr(rev), )
+                revs.append(prev)
+                revs.append(rev)
+            elif arg in [ '-s', '--separate' ]:
+                # open items in separate tabs
+                n = len(specs)
+                if n > 0:
+                    diff.newLoadedFileDiffViewer(tab_label, specs)
+                    specs = []
+                separate = True
+            elif i + 1 < argc and arg in [ '-t', '--tab' ]:
+                # start a new tab
+                n = len(specs)
+                if n > 0:
+                    diff.newLoadedFileDiffViewer(tab_label, specs)
+                    specs = []
+                i += 1
+                tab_label = args[i]
+            elif i + 1 < argc and arg in [ '-e', '--encoding' ]:
+                i += 1
+                encoding = args[i]
+                if encodings.aliases.aliases.has_key(encoding):
+                    encoding = encodings.aliases.aliases[encoding]
+            elif arg in [ '-b', '--ignore-space-change' ]:
+                diff.prefs.setBool('display_ignore_whitespace_changes', True)
+                diff.prefs.setBool('align_ignore_whitespace_changes', True)
+                diff.preferences_updated()
+            elif arg in [ '-B', '--ignore-blank-lines' ]:
+                diff.prefs.setBool('display_ignore_blanklines', True)
+                diff.prefs.setBool('align_ignore_blanklines', True)
+                diff.preferences_updated()
+            elif arg in [ '-i', '--ignore-case' ]:
+                diff.prefs.setBool('display_ignore_case', True)
+                diff.prefs.setBool('align_ignore_case', True)
+                diff.preferences_updated()
+            elif arg in [ '-w', '--ignore-all-space' ]:
+                diff.prefs.setBool('display_ignore_whitespace', True)
+                diff.prefs.setBool('align_ignore_whitespace', True)
+                diff.preferences_updated()
+            elif arg in [ '-D', '--close-if-same' ]:
+                close_on_same = True
+            else:
+                print _('Skipping unknown argument %s.') % (repr(args[i]), )
+        else:
+            filename = args[i]
+            if len(specs) == 0:
+                isdirviewer = os.path.isdir(filename)
+            elif not isdirviewer and os.path.isdir(filename):
+                filename = os.path.join(filename, os.path.basename(specs[0].name))
+            for rev in revs:
+                specs.append(FileSpec(filename, rev, None, encoding))
+            if len(revs) <= 1:
+                specs.append(FileSpec(filename, None, None, encoding))
+            revs = []
+            if separate:
+                diff.newLoadedFileDiffViewer(filename, specs)
+                specs = []
+        i += 1
+    n = len(specs)
+    if n > 0:
+        diff.newLoadedFileDiffViewer(tab_label, specs)
+    nb = diff.notebook
+    n = nb.get_n_pages()
+    if n == 0:
+        diff.newLoadedFileDiffViewer(tab_label, [])
+    elif close_on_same:
+        for i in range(n - 1, -1, -1):
+            if not nb.get_nth_page(i).hasDifferences():
+                nb.remove_page(i)
+    n = nb.get_n_pages()
+    if n > 0:
+        nb.set_show_tabs(n > 1)
+        nb.get_nth_page(0).grab_focus()
+        diff.move(window_x, window_y)
+        diff.resize(window_width, window_height)
+        if window_maximized:
+            diff.maximize()
+        diff.show()
+        gtk.main()
+        # save state
+        try:
+            f = open(configpath, 'w')
+            f.write("""# This config file was generated by %s %s.
+position %d %d
+size %d %d
+maximized %d
+""" % (APP_NAME, VERSION, window_x, window_y, window_width, window_height, window_maximized))
+            f.close()
+        except IOError:
+            print _('Error writing %s.') % (repr(configpath), )
