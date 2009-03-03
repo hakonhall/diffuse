@@ -1,0 +1,82 @@
+Diffuse
+Version 0.3.0
+
+Copyright (C) 2006-2009 Derrick Moser <derrick_moser@yahoo.com>
+
+----
+
+Diffuse is a graphical tool for merging and comparing text files.  Diffuse is
+able to compare an arbitrary number of files side-by-side and gives users the
+ability to manually adjust line matching and directly edit files.  Diffuse can
+also retrieve revisions of files from Bazaar, CVS, Darcs, Git, Mercurial,
+Monotone, Subversion, and SVK repositories for comparison and merging.
+
+Some key features of Diffuse:
+- ability to compare and merge an arbitrary number of files side-by-side (n-way merges)
+- line matching can be manually corrected by the user
+- ability to directly edit files
+- syntax highlighting
+- Bazaar, CVS, Darcs, Git, Mercurial, Monotone, Subversion, and SVK support
+- support for UTF-8 encoded unicode
+- unlimited undo
+- easy keyboard navigation
+
+----
+
+Requirements:
+
+- Python >= 2.4
+- PyGTK >= 2.10
+
+----
+
+Diffuse is implemented entirely in Python and should run on any platform with
+Python and PyGTK.  If you need to manually install PyGTK, please be aware its
+dependencies should be installed prior to installing PyGTK.
+
+Diffuse can be run directly from an untared source distribution on any POSIX
+system or installed with the instructions below.
+
+The rules for parsing files in ~/.diffuse have changed in the 0.3.0 release.
+Non-fatal errors may be reported when parsing old files.  These errors can be
+fixed by removing the offending lines (or the entire file) from
+~/.diffuse/diffuserc.  Errors in ~/.diffuse/config will be automatically fixed
+when Diffuse exits.
+
+----
+
+Installing on Linux:
+
+Diffuse can be installed from source on most Linux distributions by simply
+copying the files and directories in the 'src' directory to the root of the
+host system.  For example:
+
+  bash# cp -a src/* /
+
+If you wish to install Diffuse (or portions of Diffuse) to other locations, the
+paths used to locate configuration files, icons, and help documentation in
+'src/etc/diffuserc', 'src/usr/bin/diffuse', and
+'src/usr/share/omf/diffuse/diffuse-C.omf' need to be modified.
+
+Diffuse's help documentation is written in the DocBook format and can be easily
+converted into other formats using XSLT stylesheets.  If the local help
+documentation or its browser are unavailable, Diffuse will attempt to display
+the on-line help documentation using a web browser.
+
+Some platforms specific post-install steps may be required to index the
+documentation and mime-type handling.  For example:
+
+  bash# scrollkeeper-update -q -o /usr/share/omf/diffuse
+  bash# update-desktop-database
+
+Similar steps may be necessary when uninstalling Diffuse.  For example:
+
+  bash# scrollkeeper-update -q
+  bash# update-desktop-database
+
+----
+
+Installing on Windows:
+
+The 'windows-installer' directory contains scripts for building an installable
+package for Windows that includes all dependencies.
