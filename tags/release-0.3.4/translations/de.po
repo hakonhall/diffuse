@@ -1,0 +1,738 @@
+# German translations for diffuse package.
+# This is an alpha release.
+# Copyright (C) 2009 Derrick Moser
+# This file is distributed under the same license as the diffuse package.
+# Henri Menke <henrimenke4@aim.com>, 2009.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: diffuse-svn\n"
+"Report-Msgid-Bugs-To: Derrick Moser <derrick_moser@yahoo.com>\n"
+"POT-Creation-Date: \n"
+"PO-Revision-Date: \n"
+"Last-Translator: Henri Menke <henrimenke4@aim.com>\n"
+"Language-Team: German <henrimenke4@aim.com>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Poedit-Language: German\n"
+"X-Poedit-Country: GERMANY\n"
+"X-Poedit-SourceCharset: utf-8\n"
+
+#: ../src/usr/bin/diffuse:5434
+#, python-format
+msgid "A file named %s already exists.  Do you want to overwrite it?"
+msgstr "Eine Datei mit dem Namen %s existiert bereits. Überschreiben?"
+
+#: ../src/usr/bin/diffuse:3382
+msgid "Align to Selection"
+msgstr "Ausrichten an der Auswahl"
+
+#: ../src/usr/bin/diffuse:741
+msgid "Alignment"
+msgstr "Ausrichtung"
+
+#: ../src/usr/bin/diffuse:758
+msgid "Always show the tab bar"
+msgstr "Reiter-Leiste immer immer anzeigen"
+
+#: ../src/usr/bin/diffuse:753
+msgid "Auto indent"
+msgstr "Automatischer Einzug"
+
+#: ../src/usr/bin/diffuse:5642
+msgid "C_lear Edits"
+msgstr "Alle _Änderungen rückgängig"
+
+#: ../src/usr/bin/diffuse:5988
+msgid "Choose Folder With Modified Files"
+msgstr "Ordner mit bearbeiteten Dateien auswählen"
+
+#: ../src/usr/bin/diffuse:3391
+#: ../src/usr/bin/diffuse:5718
+msgid "Clear Edits"
+msgstr "Alle Änderungen rückgängig"
+
+#: ../src/usr/bin/diffuse:5017
+msgid "Close Tab"
+msgstr "Reiter schließen"
+
+#: ../src/usr/bin/diffuse:759
+#, python-format
+msgid "Closing the last tab quits %s"
+msgstr "Schließen des letzten Tabs beendet %s"
+
+#: ../src/usr/bin/diffuse:5164
+#, python-format
+msgid "Column %d"
+msgstr "Spalte %d"
+
+#: ../src/usr/bin/diffuse:794
+msgid "Command"
+msgstr "Befehl"
+
+#: ../src/usr/bin/diffuse:5654
+msgid "Convert to Uni_x Format"
+msgstr "Ins Uni_x Format konvertieren"
+
+#: ../src/usr/bin/diffuse:5652
+msgid "Convert to _DOS Format"
+msgstr "Ins _DOS Format konvertieren"
+
+#: ../src/usr/bin/diffuse:5653
+msgid "Convert to _Mac Format"
+msgstr "Ins _Mac Format konvertieren"
+
+#: ../src/usr/bin/diffuse:3387
+#: ../src/usr/bin/diffuse:5716
+msgid "Copy"
+msgstr "Kopieren"
+
+#: ../src/usr/bin/diffuse:63
+msgid "Copyright © 2006-2009 Derrick Moser"
+msgstr "Copyright © 2006-2009 Derrick Moser"
+
+#: ../src/usr/bin/diffuse:5637
+msgid "Cu_t"
+msgstr "_Ausschneiden"
+
+#: ../src/usr/bin/diffuse:3386
+#: ../src/usr/bin/diffuse:5715
+msgid "Cut"
+msgstr "Ausschneiden"
+
+#: ../src/usr/bin/diffuse:777
+msgid "Cygdrive prefix"
+msgstr "Cygdrive Präfix"
+
+#: ../src/usr/bin/diffuse:774
+msgid "Cygwin"
+msgstr "Cygwin"
+
+#: ../src/usr/bin/diffuse:5649
+msgid "Decrea_se Indenting"
+msgstr "Einzug _vermindern"
+
+#: ../src/usr/bin/diffuse:757
+msgid "Default panes"
+msgstr "Standard Ausschnitte"
+
+#: ../src/usr/bin/diffuse:795
+msgid "Default revision"
+msgstr "Standard Revision"
+
+#: ../src/usr/bin/diffuse:4977
+msgid "Diffuse is a graphical tool for merging and comparing text files."
+msgstr "Diffuse ist ein graphisches Werzeug zum Mischen und Vergleichen von Textdateien."
+
+#: ../src/usr/bin/diffuse:4885
+msgid "Discard unsaved changes?"
+msgstr "Ungespeicherte Änderungen verwerfen?"
+
+#: ../src/usr/bin/diffuse:730
+msgid "Display"
+msgstr "Anzeige"
+
+#: ../src/usr/bin/diffuse:749
+msgid "Editor"
+msgstr "Editor"
+
+#: ../src/usr/bin/diffuse:4897
+msgid "Encoding: "
+msgstr "Kodierung:"
+
+#: ../src/usr/bin/diffuse:5477
+#, python-format
+msgid "Error encoding to %s."
+msgstr "Fehler bei der Kodierung nach %s."
+
+#: ../src/usr/bin/diffuse:1626
+#, python-format
+msgid "Error parsing %s."
+msgstr "Fehler bei der Analyse %s."
+
+#: ../src/usr/bin/diffuse:636
+#: ../src/usr/bin/diffuse:825
+#: ../src/usr/bin/diffuse:5775
+#, python-format
+msgid "Error parsing line %(line)d of %(file)s."
+msgstr "Fehler bei der Analyse der Zeilen %(line)d von %(file)s."
+
+#: ../src/usr/bin/diffuse:5518
+msgid "Error parsing line number."
+msgstr "Fehler bei der Analyse der Zeilennummer."
+
+#: ../src/usr/bin/diffuse:6263
+#, python-format
+msgid "Error parsing revision %s."
+msgstr "Fehler bei der Analyse der Revision %s."
+
+#: ../src/usr/bin/diffuse:553
+#: ../src/usr/bin/diffuse:827
+#: ../src/usr/bin/diffuse:5321
+#: ../src/usr/bin/diffuse:5777
+#, python-format
+msgid "Error reading %s."
+msgstr "Fehler beim Lesen von %s."
+
+#: ../src/usr/bin/diffuse:5319
+#, python-format
+msgid "Error reading revision %(rev)s of %(file)s."
+msgstr "Fehler beim lesen der Revision %(rev)s von %(file)s."
+
+#: ../src/usr/bin/diffuse:5942
+#, python-format
+msgid "Error retrieving modifications for %s."
+msgstr "Fehler beim Empfangen der Bearbeitungen von %s."
+
+#: ../src/usr/bin/diffuse:876
+#: ../src/usr/bin/diffuse:5481
+#: ../src/usr/bin/diffuse:5799
+#, python-format
+msgid "Error writing %s."
+msgstr "Fehler beim Schreiben von %s."
+
+#: ../src/usr/bin/diffuse:752
+msgid "Expand tabs to spaces"
+msgstr "Tabulatoren zu Leerzeichen erweitern"
+
+#: ../src/usr/bin/diffuse:5853
+#, python-format
+msgid "File Merge %d"
+msgstr "Dateien mischen %d"
+
+#: ../src/usr/bin/diffuse:5646
+msgid "Find Pre_vious"
+msgstr "_Rückwärts suchen"
+
+#: ../src/usr/bin/diffuse:5645
+msgid "Find _Next"
+msgstr "_Nächstes suchen"
+
+#: ../src/usr/bin/diffuse:4834
+msgid "Find..."
+msgstr "Suchen..."
+
+#: ../src/usr/bin/diffuse:5703
+msgid "First Difference"
+msgstr "Erster Unterschied"
+
+#: ../src/usr/bin/diffuse:732
+msgid "Font"
+msgstr "Schriftart"
+
+#: ../src/usr/bin/diffuse:4940
+msgid "Go To Line..."
+msgstr "Gehe zu Zeile..."
+
+#: ../src/usr/bin/diffuse:739
+msgid "Hide end of line characters"
+msgstr "Zeilenumbrüche verstecken"
+
+#: ../src/usr/bin/diffuse:736
+msgid "Ignore blank line differences"
+msgstr "Unterschiede bei leeren Zeilen ignorieren"
+
+#: ../src/usr/bin/diffuse:745
+msgid "Ignore blank lines"
+msgstr "Leere Zeilen ignorieren"
+
+#: ../src/usr/bin/diffuse:747
+msgid "Ignore case"
+msgstr "Groß- und Kleinschreibung ignorieren"
+
+#: ../src/usr/bin/diffuse:737
+msgid "Ignore case differences"
+msgstr "Unterschiede bei Groß- und Kleinschreibung ignorieren"
+
+#: ../src/usr/bin/diffuse:735
+#: ../src/usr/bin/diffuse:744
+msgid "Ignore changes to white space"
+msgstr "Änderungen an Leerzeichen ignorieren"
+
+#: ../src/usr/bin/diffuse:746
+msgid "Ignore end of line characters"
+msgstr "Zeilenumbrüche ignorieren"
+
+#: ../src/usr/bin/diffuse:738
+msgid "Ignore end of line differences"
+msgstr "Unterschiede bei Zeilenumbrüchen ignorieren"
+
+#: ../src/usr/bin/diffuse:743
+msgid "Ignore white space"
+msgstr "Leerzeichen ignorieren"
+
+#: ../src/usr/bin/diffuse:734
+msgid "Ignore white space differences"
+msgstr "Unterschiede bei Leerzeichen ignorieren"
+
+#: ../src/usr/bin/diffuse:3383
+msgid "Isolate"
+msgstr "Isolieren"
+
+#: ../src/usr/bin/diffuse:5706
+msgid "Last Difference"
+msgstr "Letzter Unterschied"
+
+#: ../src/usr/bin/diffuse:798
+msgid "Launch from a Bash login shell"
+msgstr "Aus einer Bash login shell starten"
+
+#: ../src/usr/bin/diffuse:4946
+msgid "Line Number: "
+msgstr "Zeilennummer: "
+
+#: ../src/usr/bin/diffuse:4865
+msgid "Match Case"
+msgstr "Übereinstimmen von Groß- und Kleinschreibung"
+
+#: ../src/usr/bin/diffuse:3384
+msgid "Merge"
+msgstr "Mischen"
+
+#: ../src/usr/bin/diffuse:5708
+msgid "Merge From Left"
+msgstr "Mischen von links"
+
+#: ../src/usr/bin/diffuse:5710
+msgid "Merge From Left Then Right"
+msgstr "Mischen von links, dann von rechts"
+
+#: ../src/usr/bin/diffuse:5686
+msgid "Merge From Left _Then Right"
+msgstr "Mischen von links, _dann von rechts"
+
+#: ../src/usr/bin/diffuse:5709
+msgid "Merge From Right"
+msgstr "Mischen von rechts"
+
+#: ../src/usr/bin/diffuse:5687
+msgid "Merge From Right T_hen Left"
+msgstr "Mischen von rechts, da_nn von links"
+
+#: ../src/usr/bin/diffuse:5711
+msgid "Merge From Right Then Left"
+msgstr "Mischen von rechts, dann von links"
+
+#: ../src/usr/bin/diffuse:5684
+msgid "Merge From _Left"
+msgstr "Mischen von _links"
+
+#: ../src/usr/bin/diffuse:5685
+msgid "Merge From _Right"
+msgstr "Mischen von _rechts"
+
+#: ../src/usr/bin/diffuse:5627
+msgid "New _2-Way File Merge"
+msgstr "Neues _2-Wege-Datei-Mischen"
+
+#: ../src/usr/bin/diffuse:5628
+msgid "New _3-Way File Merge"
+msgstr "Neues _3-Wege-Datei-Mischen"
+
+#: ../src/usr/bin/diffuse:5705
+msgid "Next Difference"
+msgstr "Nächster Unterschied"
+
+#: ../src/usr/bin/diffuse:5678
+msgid "Next _Tab"
+msgstr "N_ächster Reiter"
+
+#: ../src/usr/bin/diffuse:6001
+msgid "No modified files found."
+msgstr "Keine bearbeiteten Dateien gefunden."
+
+#: ../src/usr/bin/diffuse:5658
+msgid "None"
+msgstr "Keine"
+
+#: ../src/usr/bin/diffuse:5347
+msgid "Open File"
+msgstr "Datei öffnen"
+
+#: ../src/usr/bin/diffuse:5972
+msgid "Open File In New Tab"
+msgstr "Datei in neuem Reiter öffnen"
+
+#: ../src/usr/bin/diffuse:5619
+msgid "Open File In New _Tab..."
+msgstr "Datei _in neuem Reiter öffnen..."
+
+#: ../src/usr/bin/diffuse:5087
+msgid "Open File..."
+msgstr "Datei öffnen..."
+
+#: ../src/usr/bin/diffuse:5620
+msgid "Open _Modified Files..."
+msgstr "_Bearbeitete Dateien öffnen..."
+
+#: ../src/usr/bin/diffuse:763
+msgid "Order of codecs used to identify encoding"
+msgstr "Reihenfolge der Chiffren um die Kodierung zu erkennen"
+
+#: ../src/usr/bin/diffuse:3388
+#: ../src/usr/bin/diffuse:5717
+msgid "Paste"
+msgstr "Einfügen"
+
+#: ../src/usr/bin/diffuse:6077
+msgid "Phrase not found.  Continue from the end of the file?"
+msgstr "Ausdruck nicht gefunden.  Am Ende der Datei fortsetzen?"
+
+#: ../src/usr/bin/diffuse:6079
+msgid "Phrase not found.  Continue from the start of the file?"
+msgstr "Ausdruck nicht gefunden.  Am Anfang der Datei fortsetzen?"
+
+#: ../src/usr/bin/diffuse:5656
+msgid "Pr_eferences..."
+msgstr "_Einstellungen..."
+
+#: ../src/usr/bin/diffuse:5677
+msgid "Pre_vious Tab"
+msgstr "V_origer Reiter"
+
+#: ../src/usr/bin/diffuse:852
+msgid "Preferences"
+msgstr "Einstellungen"
+
+#: ../src/usr/bin/diffuse:5541
+msgid "Press the enter key or double click to edit.  Press the space bar or use the RMB menu to manually align."
+msgstr "Enter drücken, oder Doppelklicken zum editieren.  Drücken Sie die Leertaste, oder nutzen sie das RMB Menü zum manuellen Ausrichten"
+
+#: ../src/usr/bin/diffuse:5543
+msgid "Press the escape key to finish editing."
+msgstr "Drücken Sie die Escape Taste um die Bearbeitung zu beenden."
+
+#: ../src/usr/bin/diffuse:5704
+msgid "Previous Difference"
+msgstr "Voriger Unterschied"
+
+#: ../src/usr/bin/diffuse:5669
+msgid "Re_align All"
+msgstr "Alle neu _ausrichten"
+
+#: ../src/usr/bin/diffuse:5701
+msgid "Realign All"
+msgstr "Alle neu ausrichten"
+
+#: ../src/usr/bin/diffuse:5714
+msgid "Redo"
+msgstr "Wiederholen"
+
+#: ../src/usr/bin/diffuse:761
+msgid "Regional Settings"
+msgstr "Lokalisierung"
+
+#: ../src/usr/bin/diffuse:5088
+msgid "Reload File"
+msgstr "Datei neu laden"
+
+#: ../src/usr/bin/diffuse:4915
+msgid "Revision: "
+msgstr "Revision: "
+
+#: ../src/usr/bin/diffuse:776
+msgid "Root directory"
+msgstr "Hauptverzeichnis"
+
+#: ../src/usr/bin/diffuse:5417
+#, python-format
+msgid "Save %(title)s Pane %(pane)d"
+msgstr "Speichern %(title)s Ausschnitt %(pane)d"
+
+#: ../src/usr/bin/diffuse:5625
+msgid "Save A_ll"
+msgstr "_Alle speichern"
+
+#: ../src/usr/bin/diffuse:5089
+msgid "Save File"
+msgstr "Datei speichern"
+
+#: ../src/usr/bin/diffuse:5090
+msgid "Save File As..."
+msgstr "Datei speichern unter..."
+
+#: ../src/usr/bin/diffuse:5624
+msgid "Save File _As..."
+msgstr "Datei speichern _unter..."
+
+#: ../src/usr/bin/diffuse:4870
+msgid "Search Backwards"
+msgstr "Rückwärts suchen"
+
+#: ../src/usr/bin/diffuse:4840
+msgid "Search For: "
+msgstr "Suchen nach: "
+
+#: ../src/usr/bin/diffuse:3390
+msgid "Select All"
+msgstr "Alles auswählen"
+
+#: ../src/usr/bin/diffuse:5641
+msgid "Select _All"
+msgstr "_Alles auswählen"
+
+#: ../src/usr/bin/diffuse:5545
+msgid "Select target line and press the space bar to align.  Press the escape key to cancel."
+msgstr "Zeile auswählen und Leertaste drücken zum Ausrichten.  Drücken Sie die Escape Taste zum Abbrechen."
+
+#: ../src/usr/bin/diffuse:5680
+msgid "Shift Pane _Left"
+msgstr "Ausschnitt nach _links verschieben"
+
+#: ../src/usr/bin/diffuse:5681
+msgid "Shift Pane _Right"
+msgstr "Ausschnitt nach _rechts verschieben"
+
+#: ../src/usr/bin/diffuse:6312
+#, python-format
+msgid "Skipping unknown argument \"%s\"."
+msgstr "Übergehe unbekannten Parameter \"%s\"."
+
+#: ../src/usr/bin/diffuse:751
+msgid "Soft tab width"
+msgstr "Weiche Tabulatorweite"
+
+#: ../src/usr/bin/diffuse:3393
+msgid "Swap with Selected Pane"
+msgstr "Mit ausgewähltem Ausschnitt tauschen"
+
+#: ../src/usr/bin/diffuse:733
+msgid "Tab width"
+msgstr "Tabulatorweite"
+
+#: ../src/usr/bin/diffuse:755
+msgid "Tabs"
+msgstr "Reiter"
+
+#: ../src/usr/bin/diffuse:5397
+#, python-format
+msgid "The file %s changed on disk.  Do you want to reload the file?"
+msgstr "Die Datei %s wurde auf geändert.  Wollen Sie die Datei neu laden?"
+
+#: ../src/usr/bin/diffuse:5439
+#, python-format
+msgid "The file %s has been modified by another process since reading it.  If you save, all the external changes could be lost.  Save anyways?"
+msgstr "Die Datei %s wurde seit dem letzten Mal von einem anderen Prozess verändert. Wenn Sie speichern werden alle externen Änderungen verloren gehen.  Trotzdem Speichern?"
+
+#: ../src/usr/bin/diffuse:4984
+msgid ""
+"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the licence, or (at your option) any later version.\n"
+"\n"
+"This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.\n"
+"\n"
+"You should have received a copy of the GNU General Public License along with this program.  You may also obtain a copy of the GNU General Public License from the Free Software Foundation by visiting their web site (http://www.fsf.org/) or by writing to the Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA\n"
+msgstr ""
+"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the licence, or (at your option) any later version.\n"
+"\n"
+"This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.\n"
+"\n"
+"You should have received a copy of the GNU General Public License along with this program.  You may also obtain a copy of the GNU General Public License from the Free Software Foundation by visiting their web site (http://www.fsf.org/) or by writing to the Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA\n"
+
+#: ../src/usr/bin/diffuse:5713
+msgid "Undo"
+msgstr "Rückgängig"
+
+#: ../src/usr/bin/diffuse:6319
+#, python-format
+msgid "Unexpected directory %s."
+msgstr "Unerwartetes Verzeichnis %s."
+
+#: ../src/usr/bin/diffuse:800
+msgid "Update paths for Cygwin"
+msgstr "Pfade für Cygwin aktualisieren"
+
+#: ../src/usr/bin/diffuse:74
+msgid ""
+"Usage:\n"
+"    diffuse [ [OPTION...] [FILE...] ]...\n"
+"    diffuse ( -h | -? | --help | -v | --version )\n"
+"\n"
+"Diffuse is a graphical tool for merging and comparing text files.  Diffuse is\n"
+"able to compare an arbitrary number of files side-by-side and gives users the\n"
+"ability to manually adjust line matching and directly edit files.  Diffuse can\n"
+"also retrieve revisions of files from Bazaar, CVS, Darcs, Git, Mercurial,\n"
+"Monotone, Subversion, and SVK repositories for comparison and merging.\n"
+"\n"
+"Help Options:\n"
+"  ( -h | -? | --help )             Display this usage information\n"
+"  ( -v | --version )               Display version and copyright information\n"
+"\n"
+"Configuration Options:\n"
+"  --no-rcfile                      Do not read any resource files\n"
+"  --rcfile <file>                  Specify explicit resource file\n"
+"\n"
+"General Options:\n"
+"  ( -c | --commit ) <rev>          File revisions <rev-1> and <rev>\n"
+"  ( -D | --close-if-same )         Close all tabs with no differences\n"
+"  ( -e | --encoding ) <codec>      Use <codec> to read and write files\n"
+"  ( -m | --modified )              Create a new tab for each modified file\n"
+"  ( -r | --revision ) <rev>        File revision <rev>\n"
+"  ( -s | --separate )              Create a new tab for each file\n"
+"  ( -t | --tab )                   Start a new tab\n"
+"\n"
+"Display Options:\n"
+"  ( -b | --ignore-space-change )   Ignore changes to white space\n"
+"  ( -B | --ignore-blank-lines )    Ignore changes in blank lines\n"
+"  ( -E | --ignore-end-of-line )    Ignore end of line differences\n"
+"  ( -i | --ignore-case )           Ignore case differences\n"
+"  ( -w | --ignore-all-space )      Ignore white space differences"
+msgstr ""
+"Verwendung:\n"
+"    diffuse [ [OPTION...] [DATEI...] ]...\n"
+"    diffuse ( -h | -? | --help | -v | --version )\n"
+"\n"
+"Diffuse ist ein graphisches Werzeug zum Mischen und Vergleichen von Textdateien.\n"
+"Diffuse ist in der Lage eine beliebige Anzahl von Dateien direkt zu vergleichen und gibt\n"
+"Nutzern die Möglichkeit manuell die Übereinstimmung anzupassen und Dateien direkt zu bearbeiten.\n"
+"Diffuse kann ebenfalls Revisionen von Bazaar, CVS, Darcs, Git und Mercurial, Monotone, Subversion und SVK Depots empfangen um sie zu Vergleichen und zu Mischen\n"
+"\n"
+"Hilfe Optionen:\n"
+"  ( -h | -? | --help )             Diese Information anzeigen\n"
+"  ( -v | --version )               Version und Copyright anzeigen\n"
+"\n"
+"Konfigurations Optionen:\n"
+"  --no-rcfile                      Keine Einstellungsdatei lesen\n"
+"  --rcfile <file>                  Explizit eine Einstellungsdatei angeben\n"
+"\n"
+"Generelle Optionen:\n"
+"  ( -c | --commit ) <rev>          Datei Revisionen <rev-1> und <rev>\n"
+"  ( -D | --close-if-same )         Alle Reiter ohne Unterschiede schließen\n"
+"  ( -e | --encoding ) <codec>      <codec> verwenden zum Lesen und Schreiben von Dateien\n"
+"  ( -m | --modified )              Neuen Reiter für jede modifizierte Datei öffnen\n"
+"  ( -r | --revision ) <rev>        Datei Revision <rev>\n"
+"  ( -s | --separate )              Neuen Reiter für jede Datei erstellen\n"
+"  ( -t | --tab )                   Neuen Reiter öffnen\n"
+"\n"
+"Anzeige Optionen:\n"
+"  ( -b | --ignore-space-change )   Änderungen an Leerzeichen ignorieren\n"
+"  ( -B | --ignore-blank-lines )    Änderungen an leeren Zeilen ignorieren\n"
+"  ( -E | --ignore-end-of-line )    Unterschiede an Zeilenumbrüchen ignorieren\n"
+"  ( -i | --ignore-case )           Unterschiede an Groß- und Kleinschreibung ignorieren\n"
+"  ( -w | --ignore-all-space )      Unterschiede an Leerzeichen ignorieren"
+
+#: ../src/usr/bin/diffuse:803
+msgid "Version Control"
+msgstr "Versionsverwaltung"
+
+#: ../src/usr/bin/diffuse:508
+#, python-format
+msgid "Warning: unknown colour \"%s\""
+msgstr "Warnung: Unbekannte Farbe \"%s\""
+
+#: ../src/usr/bin/diffuse:517
+#, python-format
+msgid "Warning: unknown float \"%s\""
+msgstr "Warnung: Unbekannter Gleitkommawert \"%s\""
+
+#: ../src/usr/bin/diffuse:526
+#, python-format
+msgid "Warning: unknown string \"%s\""
+msgstr "Warnung: Unbekannte Zeichenkette \"%s\""
+
+#: ../src/usr/bin/diffuse:5692
+#, python-format
+msgid "_About %s..."
+msgstr "_Über %s..."
+
+#: ../src/usr/bin/diffuse:5630
+msgid "_Close Tab"
+msgstr "_Reiter schließen"
+
+#: ../src/usr/bin/diffuse:5638
+msgid "_Copy"
+msgstr "_Kopieren"
+
+#: ../src/usr/bin/diffuse:5633
+msgid "_Edit"
+msgstr "_Bearbeiten"
+
+#: ../src/usr/bin/diffuse:5617
+msgid "_File"
+msgstr "_Datei"
+
+#: ../src/usr/bin/diffuse:5644
+msgid "_Find..."
+msgstr "_Suchen..."
+
+#: ../src/usr/bin/diffuse:5672
+msgid "_First Difference"
+msgstr "_Erster Unterschied"
+
+#: ../src/usr/bin/diffuse:5647
+msgid "_Go To Line..."
+msgstr "_Gehe zu Zeile..."
+
+#: ../src/usr/bin/diffuse:5689
+msgid "_Help"
+msgstr "_Hilfe"
+
+#: ../src/usr/bin/diffuse:5690
+msgid "_Help Contents..."
+msgstr "_Inhalt..."
+
+#: ../src/usr/bin/diffuse:5650
+msgid "_Increase Indenting"
+msgstr "Einzug er_höhen"
+
+#: ../src/usr/bin/diffuse:5670
+msgid "_Isolate"
+msgstr "_Isolieren"
+
+#: ../src/usr/bin/diffuse:5675
+msgid "_Last Difference"
+msgstr "_Letzter Unterschied"
+
+#: ../src/usr/bin/diffuse:5683
+msgid "_Merge"
+msgstr "_Mischen"
+
+#: ../src/usr/bin/diffuse:5674
+msgid "_Next Difference"
+msgstr "_Nächster Unterschied"
+
+#: ../src/usr/bin/diffuse:5618
+msgid "_Open File..."
+msgstr "Datei _öffnen"
+
+#: ../src/usr/bin/diffuse:5639
+msgid "_Paste"
+msgstr "_Einfügen"
+
+#: ../src/usr/bin/diffuse:5673
+msgid "_Previous Difference"
+msgstr "_Voriger Unterschied"
+
+#: ../src/usr/bin/diffuse:5631
+msgid "_Quit"
+msgstr "_Beenden"
+
+#: ../src/usr/bin/diffuse:5635
+msgid "_Redo"
+msgstr "_Wiederholen"
+
+#: ../src/usr/bin/diffuse:5621
+msgid "_Reload File"
+msgstr "Datei _neu laden"
+
+#: ../src/usr/bin/diffuse:5623
+msgid "_Save File"
+msgstr "Datei _speichern"
+
+#: ../src/usr/bin/diffuse:5667
+msgid "_Syntax Highlighting"
+msgstr "_Syntax Hervorhebung"
+
+#: ../src/usr/bin/diffuse:5634
+msgid "_Undo"
+msgstr "_Rückgängig"
+
+#: ../src/usr/bin/diffuse:5666
+msgid "_View"
+msgstr "_Ansicht"
+
+#: ../src/usr/bin/diffuse:4981
+msgid "translator_credits"
+msgstr ""
+"Henri Menke <henrimenke4@aim.com>"
