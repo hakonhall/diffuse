@@ -1958,7 +1958,7 @@ class _Git:
                             if not isabs:
                                 k0 = relpath(pwd, k0)
                                 k1 = relpath(pwd, k1)
-                            renamed[k1] = [ (k0, prev), (k1, None) ]
+                            renamed[k1] = [ (k0, prev), (k1, ':0') ]
                 elif len(parts) == 2:
                     k = self._extractPath(k, prefs)
                     if fs.contains(k):
