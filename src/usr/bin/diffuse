@@ -1941,7 +1941,7 @@ class _Git:
             # Diff between commit ref and staged.
             prev = options['from-commit']
             # run command
-            args = [prefs.getString('git_bin'), '--no-pager', 'diff', '--name-status', '--diff-filter=ADMR', prev]
+            args = [prefs.getString('git_bin'), '--no-pager', 'diff', '--name-status', '--diff-filter=ADMR', '--cached', prev]
             for s in popenReadLines(self.root, args, prefs, 'git_bash'):
                 # parse response
                 parts = s.split('\t')
