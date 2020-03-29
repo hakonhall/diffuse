@@ -107,6 +107,7 @@ General Options:
   ( -e | --encoding ) <codec>      Use <codec> to read and write files
   ( -L | --label ) <label>         Display <label> instead of the file name
   ( -m | --modified )              Create a new tab for each modified file
+  ( -M | --modified-since ) <rev>  Create a new tab for each file since rev
   ( -r | --revision ) <rev>        File revision <rev>
   ( -s | --separate )              Create a new tab for each file
   ( -t | --tab )                   Start a new tab
@@ -1607,7 +1608,7 @@ class _Bzr:
                     result.append(m[k])
         return result
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         # build command
         args = [ prefs.getString('bzr_bin'), 'status', '-SV' ]
         # build list of interesting files
@@ -1713,7 +1714,7 @@ class _Cvs:
             logError(_('Error parsing revision %s.') % (rev, ))
         return result
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         # build command
         args = [ prefs.getString('cvs_bin'), '-nq', 'update', '-R' ]
         # build list of interesting files
@@ -1869,7 +1870,7 @@ class _Darcs:
     def getCommitTemplate(self, prefs, rev, names):
         return self._getCommitTemplate(prefs, names, rev)
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         return self._getCommitTemplate(prefs, names, None)
 
     def getRevision(self, prefs, name, rev):
@@ -1928,73 +1929,112 @@ class _Git:
     def _extractPath(self, s, prefs):
         return os.path.join(self.root, prefs.convertToNativePath(s.strip()))
 
-    def getFolderTemplate(self, prefs, names):
-        # build command
-        args = [ prefs.getString('git_bin'), 'status', '--porcelain', '-s', '--untracked-files=no', '--ignore-submodules=all' ]
+    def getFolderTemplate(self, prefs, names, options):
         # build list of interesting files
         pwd, isabs = os.path.abspath(os.curdir), False
         for name in names:
             isabs |= os.path.isabs(name)
         # run command
-        prev = 'HEAD'
         fs = _VcsFolderSet(names)
         modified, renamed = {}, {}
-        # 'git status' will return 1 when a commit would fail
-        for s in popenReadLines(self.root, args, prefs, 'git_bash', [0, 1]):
-            # parse response
-            if len(s) < 3:
-                continue
-            x, y, k = s[0], s[1], s[2:]
-            if x == 'R':
-                # renamed
-                k = k.split(' -> ')
-                if len(k) == 2:
-                    k0 = self._extractPath(k[0], prefs)
-                    k1 = self._extractPath(k[1], prefs)
-                    if fs.contains(k0) or fs.contains(k1):
+        if options.has_key('from-commit'):
+            # Diff between commit ref and staged.
+            prev = options['from-commit']
+            # run command
+            args = [prefs.getString('git_bin'), '--no-pager', 'diff', '--name-status', '--diff-filter=ADMR', prev]
+            for s in popenReadLines(self.root, args, prefs, 'git_bash'):
+                # parse response
+                parts = s.split('\t')
+                if len(parts) < 2 or len(parts[0]) < 1 or len(parts[1]) < 1:
+                    continue
+                x = parts[0][0]
+                k = parts[1]
+                if x == 'R':
+                    # renamed
+                    if len(parts) == 3:
+                        k0 = self._extractPath(k, prefs)
+                        k1 = self._extractPath(parts[2], prefs)
+                        if fs.contains(k0) or fs.contains(k1):
+                            if not isabs:
+                                k0 = relpath(pwd, k0)
+                                k1 = relpath(pwd, k1)
+                            renamed[k1] = [ (k0, prev), (k1, None) ]
+                elif len(parts) == 2:
+                    k = self._extractPath(k, prefs)
+                    if fs.contains(k):
                         if not isabs:
-                            k0 = relpath(pwd, k0)
-                            k1 = relpath(pwd, k1)
-                        renamed[k1] = [ (k0, prev), (k1, None) ]
-            elif x == 'U' or y == 'U' or (x == 'D' and y == 'D'):
-                # merge conflict
-                k = self._extractPath(k, prefs)
-                if fs.contains(k):
-                    if not isabs:
-                        k = relpath(pwd, k)
-                    if x == 'D':
-                        panes = [ (None, None) ]
-                    else:
-                        panes = [ (k, ':2') ]
-                    panes.append((k, None))
-                    if y == 'D':
-                        panes.append((None, None))
-                    else:
-                        panes.append((k, ':3'))
-                    if x != 'A' and y != 'A':
-                        panes.append((k, ':1'))
-                    modified[k] = panes
-            else:
-                k = self._extractPath(k, prefs)
-                if fs.contains(k):
-                    if not isabs:
-                        k = relpath(pwd, k)
-                    if x == 'A':
-                        # added
-                        panes = [ (None, None) ]
-                    else:
-                        panes = [ (k, prev) ]
-                    # staged changes
-                    if x == 'D':
-                        panes.append((None, None))
-                    elif x != ' ':
-                        panes.append((k, ':0'))
-                    # working copy changes
-                    if y == 'D':
-                        panes.append((None, None))
-                    elif y != ' ':
+                            k = relpath(pwd, k)
+                        if x == 'A':
+                            # added
+                            panes = [ (None, None) ]
+                        else:
+                            panes = [ (k, prev) ]
+                        # staged changes
+                        if x == 'D':
+                            panes.append((None, None))
+                        elif x != ' ':
+                            panes.append((k, ':0'))
+                        modified[k] = panes
+        else:
+            prev = 'HEAD'
+            # build command
+            args = [ prefs.getString('git_bin'), 'status', '--porcelain', '-s', '--untracked-files=no', '--ignore-submodules=all' ]
+            # 'git status' will return 1 when a commit would fail
+            for s in popenReadLines(self.root, args, prefs, 'git_bash', [0, 1]):
+                # parse response
+                if len(s) < 3:
+                    continue
+                x, y, k = s[0], s[1], s[2:]
+                if x == 'R':
+                    # renamed
+                    k = k.split(' -> ')
+                    if len(k) == 2:
+                        k0 = self._extractPath(k[0], prefs)
+                        k1 = self._extractPath(k[1], prefs)
+                        if fs.contains(k0) or fs.contains(k1):
+                            if not isabs:
+                                k0 = relpath(pwd, k0)
+                                k1 = relpath(pwd, k1)
+                            renamed[k1] = [ (k0, prev), (k1, None) ]
+                elif x == 'U' or y == 'U' or (x == 'D' and y == 'D'):
+                    # merge conflict
+                    k = self._extractPath(k, prefs)
+                    if fs.contains(k):
+                        if not isabs:
+                            k = relpath(pwd, k)
+                        if x == 'D':
+                            panes = [ (None, None) ]
+                        else:
+                            panes = [ (k, ':2') ]
                         panes.append((k, None))
-                    modified[k] = panes
+                        if y == 'D':
+                            panes.append((None, None))
+                        else:
+                            panes.append((k, ':3'))
+                        if x != 'A' and y != 'A':
+                            panes.append((k, ':1'))
+                        modified[k] = panes
+                else:
+                    k = self._extractPath(k, prefs)
+                    if fs.contains(k):
+                        if not isabs:
+                            k = relpath(pwd, k)
+                        if x == 'A':
+                            # added
+                            panes = [ (None, None) ]
+                        else:
+                            panes = [ (k, prev) ]
+                        # staged changes
+                        if x == 'D':
+                            panes.append((None, None))
+                        elif x != ' ':
+                            panes.append((k, ':0'))
+                        # working copy changes
+                        if y == 'D':
+                            panes.append((None, None))
+                        elif y != ' ':
+                            panes.append((k, None))
+                        modified[k] = panes
         # sort the results
         result, r = [], set()
         for m in modified, renamed:
@@ -2102,7 +2142,7 @@ class _Hg:
     def getCommitTemplate(self, prefs, rev, names):
         return self._getCommitTemplate(prefs, names, [ 'log', '--template', 'A\t{file_adds}\nM\t{file_mods}\nR\t{file_dels}\n', '-r', rev ], rev)
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         return self._getCommitTemplate(prefs, names, [ 'status', '-q' ], None)
 
     def getRevision(self, prefs, name, rev):
@@ -2218,7 +2258,7 @@ class _Mtn:
                 result.append([ (k0, prev), (k1, rev) ])
         return result
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         fs = _VcsFolderSet(names)
         result = []
         pwd, isabs = os.path.abspath(os.curdir), False
@@ -2330,7 +2370,7 @@ class _Rcs:
             logError(_('Error parsing revision %s.') % (rev, ))
         return result
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         # build command
         cmd = [ prefs.getString('rcs_bin_rlog'), '-L', '-h' ]
         # build list of interesting files
@@ -2607,7 +2647,7 @@ class _Svn:
     def getCommitTemplate(self, prefs, rev, names):
         return self._getCommitTemplate(prefs, rev, names)
 
-    def getFolderTemplate(self, prefs, names):
+    def getFolderTemplate(self, prefs, names, options):
         return self._getCommitTemplate(prefs, None, names)
 
     def getRevision(self, prefs, name, rev):
@@ -8070,7 +8110,7 @@ class Diffuse(gtk.Window):
             vcs = theVCSs.findByFolder(dn, self.prefs)
             if vcs is not None:
                 try:
-                    for specs in vcs.getFolderTemplate(self.prefs, names):
+                    for specs in vcs.getFolderTemplate(self.prefs, names, options):
                         viewer = self.newFileDiffViewer(len(specs))
                         for i, spec in enumerate(specs):
                             name, rev = spec
@@ -8469,7 +8509,6 @@ if __name__ == '__main__':
                 # specified revision
                 funcs[mode](specs, labels, options)
                 i += 1
-                rev = args[i]
                 specs, labels, options = [], [], { 'commit': args[i] }
                 mode = 'commit'
             elif arg in [ '-D', '--close-if-same' ]:
@@ -8481,6 +8520,11 @@ if __name__ == '__main__':
             elif arg in [ '-m', '--modified' ]:
                 funcs[mode](specs, labels, options)
                 specs, labels, options = [], [], {}
+                mode = 'modified'
+            elif i + 1 < argc and arg in ['-M', '--modified-since']:
+                funcs[mode](specs, labels, options)
+                i += 1
+                specs, labels, options = [], [], {'from-commit': args[i]}
                 mode = 'modified'
             elif i + 1 < argc and arg in [ '-r', '--revision' ]:
                 # specified revision
