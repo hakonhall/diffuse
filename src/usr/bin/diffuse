@@ -1958,7 +1958,7 @@ class _Git:
                             if not isabs:
                                 k0 = relpath(pwd, k0)
                                 k1 = relpath(pwd, k1)
-                            renamed[k1] = [ (k0, prev), (k1, ':0') ]
+                            renamed[k1] = [ (k0, prev), (k1, 'index') ]
                 elif len(parts) == 2:
                     k = self._extractPath(k, prefs)
                     if fs.contains(k):
@@ -1973,7 +1973,7 @@ class _Git:
                         if x == 'D':
                             panes.append((None, None))
                         elif x != ' ':
-                            panes.append((k, ':0'))
+                            panes.append((k, 'index'))
                         modified[k] = panes
         else:
             prev = 'HEAD'
@@ -2046,6 +2046,7 @@ class _Git:
         return result
 
     def getRevision(self, prefs, name, rev):
+        if rev == 'index': rev = ':0'
         return popenRead(self.root, [ prefs.getString('git_bin'), 'show', '%s:%s' % (rev, relpath(self.root, os.path.abspath(name)).replace(os.sep, '/')) ], prefs, 'git_bash')
 
 def _get_git_repo(path, prefs):
@@ -7221,6 +7222,8 @@ class Diffuse(gtk.Window):
             if len(unique_names) > 0:
                 if len(unique_names) == 1:
                     self.title = names[0]
+                elif len(unique_names) == 2:
+                    self.title = u' \u2192 '.join(names)
                 else:
                     self.title = ' : '.join(names)
             s = self.title
@@ -8530,6 +8533,9 @@ if __name__ == '__main__':
                 # specified revision
                 i += 1
                 revs.append((unicode(args[i], sys.getfilesystemencoding()), encoding))
+            elif i + 1 < argc and arg in [ '-R', '--root' ]:
+                i += 1
+                specs.append((args[i], [(None, encoding)]))
             elif arg in [ '-s', '--separate' ]:
                 funcs[mode](specs, labels, options)
                 specs, labels, options = [], [], {}
